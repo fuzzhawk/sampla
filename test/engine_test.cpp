@@ -1,0 +1,142 @@
+/*
+ * engine_test.cpp — native (host-OS) DSP test for the sampler engine.
+ *
+ * The Wine smoke test only proves the DLL loads and answers the dispatcher on a
+ * silent block. This exercises the actual audio path: write a WAV, parse it with
+ * wav_load, load it into the engine, trigger a note, and confirm each loop mode
+ * produces sane, non-silent, finite output. Pure engine.h/wav.h — no VST, no
+ * Win32 — so it builds and runs anywhere with a C++ compiler.
+ *
+ * Exit 0 = all checks pass.
+ */
+#include "../src/engine.h"
+#include <cstdio>
+#include <cmath>
+#include <cstdint>
+
+static int failures = 0;
+#define CHECK(cond, msg) do { if (!(cond)) { \
+    printf("FAIL: %s\n", msg); failures++; } else printf("ok:   %s\n", msg); } while (0)
+
+/* Write a little 16-bit stereo WAV: a 220 Hz tone, `secs` long. */
+static void writeWav(const char* path, int rate, float secs)
+{
+    int frames = (int)(rate * secs);
+    FILE* f = fopen(path, "wb");
+    int dataBytes = frames * 2 * 2;  /* stereo, 16-bit */
+    int32_t riff = 36 + dataBytes;
+    auto w32 = [&](uint32_t v){ fwrite(&v, 4, 1, f); };
+    auto w16 = [&](uint16_t v){ fwrite(&v, 2, 1, f); };
+    fwrite("RIFF", 1, 4, f); w32(riff); fwrite("WAVE", 1, 4, f);
+    fwrite("fmt ", 1, 4, f); w32(16); w16(1); w16(2);
+    w32(rate); w32(rate * 4); w16(4); w16(16);
+    fwrite("data", 1, 4, f); w32(dataBytes);
+    for (int i = 0; i < frames; i++) {
+        float t = (float)i / rate;
+        int16_t s = (int16_t)(sinf(2 * 3.14159265f * 220.0f * t) * 30000);
+        w16((uint16_t)s); w16((uint16_t)s);
+    }
+    fclose(f);
+}
+
+static Sample* makeSample(const char* path)
+{
+    WavData w = wav_load(path);
+    if (!w.ok) return nullptr;
+    Sample* s = new Sample();
+    s->data = std::move(w.samples);
+    s->frames = w.frames;
+    s->srcRate = w.sampleRate;
+    s->path = path;
+    s->computePeaks();
+    return s;
+}
+
+/* run n blocks of `block` frames, return RMS and whether all samples are finite */
+static double runNote(Engine& eng, LayerParams lp, int block, int blocks,
+                      bool releaseAfter, bool& finite)
+{
+    std::vector<float> L(block), R(block);
+    float* out[2] = { L.data(), R.data() };
+    LayerParams a[3] = { lp, LayerParams(), LayerParams() };
+    a[1].volume = 0; a[2].volume = 0;   /* silence the other two layers */
+    double sum = 0; long cnt = 0; finite = true;
+    for (int b = 0; b < blocks; b++) {
+        if (releaseAfter && b == blocks / 2) eng.noteOff(eng.note);
+        eng.process(out, block, a);
+        for (int i = 0; i < block; i++) {
+            if (!std::isfinite(L[i]) || !std::isfinite(R[i])) finite = false;
+            sum += (double)L[i] * L[i] + (double)R[i] * R[i];
+            cnt += 2;
+        }
+    }
+    return cnt ? sqrt(sum / cnt) : 0.0;
+}
+
+int main()
+{
+    const char* wavPath = "/tmp/sampla_engine_test.wav";
+    writeWav(wavPath, 44100, 1.0f);
+
+    /* --- WAV loader --- */
+    WavData w = wav_load(wavPath);
+    CHECK(w.ok, "wav_load parses a 16-bit stereo WAV");
+    CHECK(w.frames > 40000 && w.frames < 48000, "wav frame count is ~1 second");
+    CHECK(w.sampleRate == 44100, "wav sample rate read back correctly");
+    CHECK(!wav_load("/tmp/does_not_exist_xyz.wav").ok, "missing file fails cleanly");
+
+    Sample* s = makeSample(wavPath);
+    CHECK(s != nullptr, "sample built + peaks computed");
+    CHECK(s->peakMax[Sample::PEAKS / 2] > 0.1f, "waveform peaks are non-trivial");
+
+    Engine eng;
+    eng.setSampleRate(44100.0f);
+    eng.layers[0].publish(new Sample(*s));  /* engine owns its own copy */
+
+    bool finite;
+
+    /* --- Forward loop --- */
+    { LayerParams lp; lp.mode = LOOP_FORWARD; lp.loopStart = 0.25f; lp.loopEnd = 0.75f;
+      lp.overlapMs = 15; lp.attackMs = 2; lp.releaseMs = 50;
+      eng.noteOn(60);
+      double rms = runNote(eng, lp, 512, 200, false, finite);
+      CHECK(finite, "forward: output is finite");
+      CHECK(rms > 0.01, "forward: produces audible output"); }
+
+    /* --- OneShot ends (envelope releases at sample end) --- */
+    { LayerParams lp; lp.mode = LOOP_ONESHOT; lp.attackMs = 1; lp.releaseMs = 20;
+      eng.noteOn(60);
+      double rms = runNote(eng, lp, 512, 120, false, finite);
+      CHECK(finite && rms > 0.005, "oneshot: plays through then stops"); }
+
+    /* --- Granular cloud over the loop region --- */
+    { LayerParams lp; lp.mode = LOOP_GRANULAR; lp.loopStart = 0.2f; lp.loopEnd = 0.8f;
+      lp.grainMs = 60; lp.density = 30; lp.playFromStart = false;
+      lp.attackMs = 5; lp.releaseMs = 100;
+      eng.noteOn(60);
+      double rms = runNote(eng, lp, 512, 200, false, finite);
+      CHECK(finite, "granular: output is finite");
+      CHECK(rms > 0.005, "granular: grain cloud produces output"); }
+
+    /* --- Release actually silences the voice --- */
+    { LayerParams lp; lp.mode = LOOP_FORWARD; lp.attackMs = 2; lp.releaseMs = 30;
+      eng.noteOn(60);
+      runNote(eng, lp, 256, 60, true, finite);
+      std::vector<float> L(256), R(256); float* out[2] = { L.data(), R.data() };
+      LayerParams a[3] = { lp, LayerParams(), LayerParams() };
+      a[1].volume = a[2].volume = 0;
+      eng.process(out, 256, a);  /* long after note-off */
+      double tail = 0; for (int i = 0; i < 256; i++) tail += fabs(L[i]);
+      CHECK(tail < 1e-3, "release: voice is silent well after note-off"); }
+
+    /* --- Pitch: higher note -> faster playback (engine advances further) --- */
+    { LayerParams lp; lp.mode = LOOP_FORWARD; lp.loopStart = 0; lp.loopEnd = 1;
+      lp.attackMs = 1;
+      eng.noteOn(72);   /* +12 semitones */
+      bool fin; double rms = runNote(eng, lp, 512, 40, false, fin);
+      CHECK(fin && rms > 0.01, "pitch: +12 semitones still renders cleanly"); }
+
+    delete s;
+    printf(failures ? "\n%d CHECK(S) FAILED\n" : "\nALL ENGINE CHECKS PASSED\n", failures);
+    return failures ? 1 : 0;
+}

@@ -81,6 +81,7 @@ enum {
     effGetChunk        = 23,
     effSetChunk        = 24,
     effProcessEvents   = 25,
+    effEditIdle        = 53,
     effCanBeAutomated  = 26,
     effGetEffectName   = 45,
     effGetVendorString = 47,
