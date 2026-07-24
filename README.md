@@ -44,16 +44,48 @@ message console under the palette, alongside scan progress, combo loads,
 exports and synthesis activity.
 
 **Lasso + style synthesis.** Click-drag on the constellation to lasso a
-region; the selected sounds become the *style* for the **SYNTHESIZE**
-button, which draws a brand-new one-shot from a compact spectral-statistics
-generative model of the selection (per-bin log-magnitude mean/variance,
-temporally-smoothed stochastic resynthesis, stereo phase decorrelation,
-percussive envelope). Every press re-rolls a new deterministic seed; the
-result auditions immediately and **EXPORT SYNTH** writes it to a WAV.
+region; the selected sounds become the *style* for two generators:
 
-Params (19, all automatable): Master, Atk, Rel, TuneKey, MinLen, MaxLen,
-MaxMB, then Vol/Pan/Tune for layers 1–4. The chunk persists params, the
-library path, and all 12 combos with the selection.
+- **SYNTHESIZE** — the built-in, dependency-free path: draws a one-shot from
+  a compact spectral-statistics model of the selection (per-bin
+  log-magnitude mean/variance, temporally-smoothed stochastic resynthesis,
+  stereo phase decorrelation, percussive envelope). Always available.
+- **GENERATE NN** — the neural path (see below): encodes the lassoed audio
+  through a **RAVE** model and decodes a fresh one-shot, shaped by
+  **NLen** (length 0.3–6 s), **Chaos** (latent exploration temperature),
+  **Morph** (blend two lassoed sources' latents), and **Sprd** (random
+  pitch spread ±semitones). Available when a model is installed.
+
+Both re-roll a new deterministic seed each press, audition immediately, and
+export via **EXP SYNTH** / **EXP NN**.
+
+### Neural sampler (RAVE via ONNX Runtime)
+
+The spectral synth averages spectra, so it tends toward the same muddy wash;
+the neural engine learns the *joint* time/frequency/phase structure, so its
+one-shots keep transients and character. It runs a pretrained
+[RAVE](https://github.com/acids-ircam/RAVE) model through **ONNX Runtime**,
+which is **loaded dynamically at runtime** — the plugin has no link-time
+dependency on it and runs fine without it (the NN panel just shows
+`NN: absent`). Install by dropping these next to the plugin DLL:
+
+    onnxruntime.dll        official ONNX Runtime for Windows (x64)
+    rave_encoder.onnx      audio -> latent
+    rave_decoder.onnx      latent -> audio
+    rave_sr.txt            model sample rate
+
+**Getting a model, all GitHub-side (no local toolchain, no GPU):** the
+`convert-model` workflow (Actions tab -> Run workflow) takes the URL of a
+pretrained RAVE `.ts` checkpoint and, on a plain CPU runner, exports the
+ONNX pair as a downloadable artifact — see `tools/export_rave_onnx.py`.
+*Converting* a trained checkpoint is CPU-only; *training* RAVE from scratch
+needs a GPU (Colab/Kaggle/paid runner), but many checkpoints are published.
+`tools/make_test_model.py` builds a tiny stand-in pair that CI uses to test
+the whole encode -> perturb -> decode path.
+
+Params (23, all automatable): Master, Atk, Rel, TuneKey, MinLen, MaxLen,
+MaxMB, Vol/Pan/Tune for layers 1–4, then NLen/NChaos/NMorph/NSprd. The chunk
+persists params, the library path, and all 12 combos with the selection.
 
 ---
 

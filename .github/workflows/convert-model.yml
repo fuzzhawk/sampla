@@ -1,0 +1,51 @@
+name: convert-model
+
+# Converts a pretrained RAVE checkpoint into the ONNX encoder/decoder pair the
+# Sample Librarian loads, entirely on a CPU GitHub runner — no local toolchain,
+# no GPU. Run it from the Actions tab: paste a URL to a RAVE .ts checkpoint and
+# download the resulting `rave-onnx-model` artifact, then drop its files (plus
+# the matching onnxruntime.dll) next to the plugin DLL.
+#
+# Note: this CONVERTS an already-trained model. Training RAVE from scratch needs
+# a GPU (Colab/Kaggle/paid runner); many pretrained checkpoints are published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      checkpoint_url:
+        description: "URL to a scripted RAVE .ts checkpoint"
+        required: true
+      sample_rate:
+        description: "Model sample rate (0 = read from model)"
+        required: false
+        default: "0"
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyTorch (CPU) + ONNX
+        run: |
+          pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --quiet onnx
+
+      - name: Download checkpoint
+        run: curl -sSL -o model.ts "${{ github.event.inputs.checkpoint_url }}"
+
+      - name: Export to ONNX
+        run: |
+          python3 tools/export_rave_onnx.py model.ts out \
+            --sr "${{ github.event.inputs.sample_rate }}"
+          ls -la out
+
+      - name: Upload model
+        uses: actions/upload-artifact@v4
+        with:
+          name: rave-onnx-model
+          path: out/*

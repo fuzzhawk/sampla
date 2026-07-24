@@ -28,7 +28,7 @@
 struct ERect { int16_t top, left, bottom, right; };
 
 static const int ED_W = 1000;
-static const int ED_H = 780;
+static const int ED_H = 800;
 static const int KNOB_R = 13;
 
 /* constellation view */
@@ -37,8 +37,8 @@ static const int CV_X = 12, CV_Y = 76, CV_W = 628, CV_H = 424;
 static const int PAL_X = 656, PAL_Y = 96, PAL_BW = 104, PAL_BH = 74, PAL_GAP = 8;
 static const int CON_Y = 424, CON_H = 76;
 /* synth row + layer strip */
-static const int SYN_Y = 508;
-static const int LAY_Y = 556;
+static const int SYN_Y = 512;
+static const int LAY_Y = 562;
 static const int MAX_LASSO = 256;
 
 static ERect     g_rect = { 0, 0, (int16_t)ED_H, (int16_t)ED_W };
@@ -72,8 +72,10 @@ static inline void pathBoxRect(RECT* r)  { r->left = 150; r->right = 700; r->top
 static inline void scanBtnRect(RECT* r)  { r->left = 710; r->right = 770; r->top = 6;  r->bottom = 26; }
 static inline void tuneBtnRect(RECT* r)  { r->left = 214; r->right = 330; r->top = 40; r->bottom = 64; }
 static inline void randBtnRect(RECT* r)  { r->left = PAL_X; r->right = PAL_X + 3 * PAL_BW + 2 * PAL_GAP; r->top = 44; r->bottom = 88; }
-static inline void synthBtnRect(RECT* r) { r->left = 12;  r->right = 150; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
-static inline void synExpBtnRect(RECT* r){ r->left = 160; r->right = 300; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
+static inline void synthBtnRect(RECT* r) { r->left = 12;  r->right = 132; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
+static inline void synExpBtnRect(RECT* r){ r->left = 138; r->right = 248; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
+static inline void nnGenBtnRect(RECT* r) { r->left = 258; r->right = 388; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
+static inline void nnExpBtnRect(RECT* r) { r->left = 394; r->right = 504; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
 static inline void exportBtnRect(RECT* r){ r->left = 800; r->right = 985; r->top = LAY_Y + 78; r->bottom = LAY_Y + 118; }
 static inline void palBtnRect(int i, RECT* r)
 {
@@ -112,6 +114,14 @@ static inline void layerKnob(int lay, int off, KnobPos* kp)
     kp->label = lbl[off];
     kp->cx = 590 + off * 66;
     kp->cy = LAY_Y + 44 + lay * 54;
+}
+static const int NNKNOBS = 4;
+static inline void nnKnob(int k, KnobPos* kp)
+{
+    static const int prm[NNKNOBS] = { pNLen, pNChaos, pNMorph, pNSpread };
+    static const char* lbl[NNKNOBS] = { "NLen", "Chaos", "Morph", "Sprd" };
+    kp->param = prm[k]; kp->label = lbl[k];
+    kp->cx = 550 + k * 66; kp->cy = SYN_Y + 20;
 }
 
 /* ---- drawing ---- */
@@ -319,10 +329,10 @@ static void paintEditor(HWND hwnd, EditorState* st)
                 tk ? RGB(70, 90, 130) : RGB(48, 52, 66));
 
     drawConstellation(dc, st);
-    SetTextColor(dc, RGB(120, 126, 140));
-    TextOutA(dc, CV_X + 4, CV_Y + CV_H + 4,
-             "click a star = audition   |   click-drag = lasso a region for synthesis",
-             71);
+    SetTextColor(dc, RGB(110, 116, 132));
+    TextOutA(dc, CV_X + 6, CV_Y + CV_H - 16,
+             "click a star = audition   |   click-drag = lasso a region",
+             57);
 
     RECT rb; randBtnRect(&rb);
     drawTextBtn(dc, rb, "RANDOMIZE - 12 combos", RGB(120, 70, 110));
@@ -359,22 +369,29 @@ static void paintEditor(HWND hwnd, EditorState* st)
 
     drawConsole(dc, p);
 
-    /* synth row */
+    /* synth + neural row */
     RECT sb2; synthBtnRect(&sb2);
     drawTextBtn(dc, sb2, "SYNTHESIZE", RGB(130, 90, 50));
     RECT se; synExpBtnRect(&se);
-    drawTextBtn(dc, se, "EXPORT SYNTH", p->synthBuf.empty() ? RGB(44, 48, 60)
-                                                            : RGB(70, 110, 80));
-    char selInfo[120];
-    if (!p->lassoSel.empty())
-        snprintf(selInfo, sizeof(selInfo),
-                 "%d sounds lassoed as style - SYNTHESIZE draws a new one-shot",
-                 (int)p->lassoSel.size());
+    drawTextBtn(dc, se, "EXP SYNTH", p->synthBuf.empty() ? RGB(44, 48, 60)
+                                                         : RGB(70, 110, 80));
+    RECT ng; nnGenBtnRect(&ng);
+    drawTextBtn(dc, ng, "GENERATE NN", RGB(80, 70, 140));
+    RECT ne; nnExpBtnRect(&ne);
+    drawTextBtn(dc, ne, "EXP NN", p->neuralBuf.empty() ? RGB(44, 48, 60)
+                                                       : RGB(70, 110, 80));
+    for (int k = 0; k < NNKNOBS; k++) {
+        KnobPos kp; nnKnob(k, &kp);
+        char val[16]; paramDisplay(p, kp.param, val);
+        drawKnob(dc, kp.cx, kp.cy, p->params[kp.param], kp.label, val);
+    }
+    char nnStat[64];
+    if (p->neural.ready)
+        snprintf(nnStat, sizeof(nnStat), "NN: ready %dHz", p->neural.modelRate);
     else
-        snprintf(selInfo, sizeof(selInfo),
-                 "lasso a constellation region, then SYNTHESIZE");
-    SetTextColor(dc, RGB(200, 180, 140));
-    TextOutA(dc, 312, SYN_Y + 12, selInfo, (int)strlen(selInfo));
+        snprintf(nnStat, sizeof(nnStat), "NN: %s", p->neuralTried ? "absent" : "idle");
+    SetTextColor(dc, p->neural.ready ? RGB(150, 220, 160) : RGB(150, 156, 170));
+    TextOutA(dc, 828, SYN_Y + 12, nnStat, (int)strlen(nnStat));
 
     /* layer controls */
     SetTextColor(dc, RGB(120, 200, 250));
@@ -505,6 +522,25 @@ static void onLDown(EditorState* st, int x, int y)
     if (inRect(r, x, y)) { p->synthesize(); InvalidateRect(st->hwnd, nullptr, FALSE); return; }
     synExpBtnRect(&r);
     if (inRect(r, x, y)) { saveDialogWav(st, "synth_oneshot.wav", true); return; }
+    nnGenBtnRect(&r);
+    if (inRect(r, x, y)) { p->neuralGenerate(); InvalidateRect(st->hwnd, nullptr, FALSE); return; }
+    nnExpBtnRect(&r);
+    if (inRect(r, x, y)) {
+        if (!p->neuralBuf.empty()) {
+            char file[MAX_PATH];
+            snprintf(file, sizeof(file), "neural_oneshot.wav");
+            OPENFILENAMEA ofn; memset(&ofn, 0, sizeof(ofn));
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = st->hwnd;
+            ofn.lpstrFilter = "WAV files\0*.wav\0";
+            ofn.lpstrFile = file;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrDefExt = "wav";
+            ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+            if (GetSaveFileNameA(&ofn)) p->exportNeural(file);
+        } else p->logf("neural export: nothing generated yet");
+        return;
+    }
     exportBtnRect(&r);
     if (inRect(r, x, y)) {
         char sug[32]; snprintf(sug, sizeof(sug), "combo_%02d.wav", p->selected + 1);
@@ -532,11 +568,12 @@ static void onLDown(EditorState* st, int x, int y)
 
     /* knobs */
     KnobPos kp;
-    for (int k = 0; k < NSKNOBS + NVKNOBS + 4 * PPLAY; k++) {
+    for (int k = 0; k < NSKNOBS + NVKNOBS + NNKNOBS + 4 * PPLAY; k++) {
         if (k < NSKNOBS) settingsKnob(k, &kp);
         else if (k < NSKNOBS + NVKNOBS) voiceKnob(k - NSKNOBS, &kp);
+        else if (k < NSKNOBS + NVKNOBS + NNKNOBS) nnKnob(k - NSKNOBS - NVKNOBS, &kp);
         else {
-            int j = k - NSKNOBS - NVKNOBS;
+            int j = k - NSKNOBS - NVKNOBS - NNKNOBS;
             layerKnob(j / PPLAY, j % PPLAY, &kp);
         }
         if ((x - kp.cx) * (x - kp.cx) + (y - kp.cy) * (y - kp.cy) <=
@@ -696,14 +733,21 @@ static void editorClose(Plugin* p)
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 {
-    if (reason == DLL_PROCESS_ATTACH) g_hInst = inst;
+    if (reason == DLL_PROCESS_ATTACH) {
+        g_hInst = inst;
+        char path[MAX_PATH] = { 0 };
+        if (GetModuleFileNameA(inst, path, MAX_PATH)) {
+            char* sl = strrchr(path, '\\');
+            if (sl) { *sl = 0; g_moduleDir = path; }
+        }
+    }
     return TRUE;
 }
 
 #else  /* !_WIN32 — headless build for CI */
 
 struct ERect { int16_t top, left, bottom, right; };
-static ERect g_rect = { 0, 0, 780, 1000 };
+static ERect g_rect = { 0, 0, 800, 1000 };
 static ERect* editorRect() { return &g_rect; }
 static bool editorOpen(Plugin*, void*) { return false; }
 static void editorClose(Plugin*) {}

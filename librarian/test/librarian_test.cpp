@@ -8,6 +8,7 @@
  * and the index cache. Exit 0 = pass.
  */
 #include "../src/librarian.h"
+#include "../src/neural.h"
 #include <cstdio>
 #include <cmath>
 #include <sys/stat.h>
@@ -243,6 +244,44 @@ int main()
       CHECK(s3v != s1, "synth: different seed, different one-shot");
       CHECK(wav_write16("/tmp/sl_synth.wav", s1.data(), fr, 44100),
             "synth: exports as wav"); }
+
+    /* --- neural engine (RAVE via ONNX Runtime) ---
+     * Runs only when build/nn holds the runtime + a model pair (CI stages
+     * the Linux ORT .so and tools/make_test_model.py's tiny pair there);
+     * skipped gracefully otherwise so offline builds still pass. */
+    { struct stat nb;
+      if (stat("build/nn/libonnxruntime.so", &nb) == 0) {
+          NeuralEngine nn;
+          CHECK(nn.init("build/nn"), "neural: runtime + models load");
+          if (nn.ready) {
+              std::vector<float> tone(44100);
+              for (int i = 0; i < 44100; i++)
+                  tone[i] = sinf(2 * 3.14159265f * 220 * i / 44100.0f) * 0.7f;
+              std::vector<float> lat; int64_t D = 0, T = 0;
+              CHECK(nn.encode(tone.data(), 44100, lat, D, T) && D > 0 && T > 0,
+                    "neural: encode audio -> latent");
+              std::vector<float> audio;
+              CHECK(nn.decode(lat.data(), D, T, audio) && audio.size() > 1000,
+                    "neural: decode latent -> audio");
+
+              std::vector<std::vector<float>> styles = { tone };
+              std::vector<float> g1, g2, g3, gLong;
+              CHECK(nn.generate(styles, 1.0f, 0.5f, 0.0f, 42, g1),
+                    "neural: generate runs");
+              nn.generate(styles, 1.0f, 0.5f, 0.0f, 42, g2);
+              nn.generate(styles, 1.0f, 0.5f, 0.0f, 43, g3);
+              nn.generate(styles, 3.0f, 0.5f, 0.0f, 42, gLong);
+              bool fin = true; double e = 0;
+              for (float v : g1) { if (!std::isfinite(v)) fin = false; e += fabs(v); }
+              CHECK(fin && e > 1.0, "neural: output finite and non-silent");
+              CHECK(g1 == g2, "neural: deterministic per seed");
+              CHECK(g1 != g3, "neural: different seed differs");
+              CHECK(gLong.size() > g1.size() * 2, "neural: Length scales output");
+          }
+      } else {
+          printf("skip: neural checks (no build/nn runtime staged)\n");
+      }
+    }
 
     printf(failures ? "\n%d CHECK(S) FAILED\n" : "\nALL LIBRARIAN CHECKS PASSED\n",
            failures);

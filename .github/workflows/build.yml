@@ -26,7 +26,17 @@ jobs:
       - name: Engine unit test (native DSP)
         run: make enginetest
 
-      - name: Librarian unit test (native)
+      - name: Stage neural test fixtures (Linux ORT + tiny model)
+        run: |
+          pip install --quiet onnx numpy
+          python3 tools/make_test_model.py build/nn
+          ORT=onnxruntime-linux-x64-1.17.3
+          curl -sSL -o ort.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/$ORT.tgz"
+          tar xzf ort.tgz
+          cp "$ORT"/lib/libonnxruntime.so.1.17.3 build/nn/libonnxruntime.so
+
+      - name: Librarian unit test (native, incl. neural)
         run: make librariantest
 
       - name: Smoke test under Wine (x64)

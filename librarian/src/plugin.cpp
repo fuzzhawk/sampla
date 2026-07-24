@@ -12,12 +12,17 @@
 
 #include "vst2.h"
 #include "librarian.h"
+#include "neural.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string>
+
+/* directory the plugin DLL lives in; set by DllMain (editor.h) on Windows,
+ * set explicitly by the headless tests */
+static std::string g_moduleDir;
 
 #define PLUGIN_NAME    "Sample Librarian"
 #define PLUGIN_VENDOR  "Morningcloak"
@@ -32,7 +37,13 @@ enum {
 };
 static const int NSLOTS = LibEngine::NSLOTS;
 static const int PPLAY = 3;
-static const int NUM_PARAMS = PARAM_LAYER0 + NSLOTS * PPLAY;   /* 19 */
+static const int LAYER_PARAMS_END = PARAM_LAYER0 + NSLOTS * PPLAY;   /* 19 */
+/* neural sampler controls */
+static const int pNLen    = LAYER_PARAMS_END + 0;
+static const int pNChaos  = LAYER_PARAMS_END + 1;
+static const int pNMorph  = LAYER_PARAMS_END + 2;
+static const int pNSpread = LAYER_PARAMS_END + 3;
+static const int NUM_PARAMS = LAYER_PARAMS_END + 4;                  /* 23 */
 
 static float paramReal(int idx, float n)
 {
@@ -45,6 +56,10 @@ static float paramReal(int idx, float n)
     case pMaxLen:  return 1.0f + n * n * 119.0f;        /* 1..120 s     */
     case pMaxMB:   return 1.0f + n * n * 199.0f;        /* 1..200 MB    */
     }
+    if (idx == pNLen)    return 0.3f + n * n * 5.7f;    /* 0.3..6 s     */
+    if (idx == pNChaos)  return n;                      /* 0..1         */
+    if (idx == pNMorph)  return n;                      /* 0..1         */
+    if (idx == pNSpread) return n * 12.0f;              /* 0..12 st     */
     int off = (idx - PARAM_LAYER0) % PPLAY;
     if (off == 0) return n;                             /* vol          */
     if (off == 1) return n;                             /* pan          */
@@ -84,6 +99,14 @@ struct Plugin {
     std::vector<int> lassoSel;             /* file indices               */
     std::vector<float> synthBuf;           /* last synthesized one-shot  */
     uint32_t synthSeed = 0x5EED0001u;
+
+    /* neural sampler (GUI thread only) */
+    NeuralEngine neural;
+    bool neuralTried = false;
+    std::string neuralDir;                 /* override for tests; else DLL dir */
+    std::vector<float> neuralBuf;          /* last neural one-shot, stereo     */
+    int neuralRate = 44100;
+    uint32_t neuralSeed = 0x0DDB1A5Eu;
 
     /* scrolling message console (GUI thread only) */
     static const int LOG_LINES = 64;
@@ -316,6 +339,134 @@ struct Plugin {
         logf(ok ? "exported synth -> %s" : "synth export FAILED: %s", outPath);
         return ok;
     }
+
+    /* ---- neural sampler (RAVE via ONNX Runtime) ---- */
+
+    bool ensureNeural()
+    {
+        if (neural.ready) return true;
+        if (neuralTried) return false;
+        neuralTried = true;
+        std::string dir = neuralDir.empty() ? g_moduleDir : neuralDir;
+        if (neural.init(dir)) {
+            logf("neural: model loaded (%d Hz, dir %s)", neural.modelRate,
+                 dir.c_str());
+            return true;
+        }
+        logf("neural: unavailable - %s", neural.err.c_str());
+        logf("neural: put onnxruntime + rave_*.onnx next to the plugin");
+        return false;
+    }
+
+    /* load a file as mono at the model's sample rate */
+    static std::vector<float> loadMonoAtRate(const std::string& path, int rate,
+                                             float maxSec)
+    {
+        std::vector<float> out;
+        WavInfo info = wav_probe(path.c_str());
+        if (!info.ok) return out;
+        WavData w = wav_load_partial(path.c_str(),
+                                     (int)(maxSec * info.sampleRate));
+        if (!w.ok || w.frames < 64) return out;
+        double ratio = (double)w.sampleRate / rate;
+        int n = (int)(w.frames / ratio);
+        out.resize((size_t)n);
+        for (int i = 0; i < n; i++) {
+            double sp = i * ratio;
+            int i0 = (int)sp;
+            if (i0 >= w.frames - 1) i0 = w.frames - 2;
+            float t = (float)(sp - i0);
+            const float* d = &w.samples[(size_t)i0 * 2];
+            float a = 0.5f * (d[0] + d[1]);
+            float b = 0.5f * (d[2] + d[3]);
+            out[(size_t)i] = a + (b - a) * t;
+        }
+        return out;
+    }
+
+    bool neuralGenerate()
+    {
+        if (!ensureNeural()) return false;
+        LibIndex* ix = indexLive.load();
+        if (!ix || lassoSel.empty()) { logf("neural: lasso a region first"); return false; }
+
+        uint32_t r = neuralSeed;
+        auto pick = [&]() {
+            r = r * 1664525u + 1013904223u;
+            return lassoSel[(r >> 8) % lassoSel.size()];
+        };
+        int fa = pick();
+        int fb = pick();
+        float morph = paramReal(pNMorph, params[pNMorph]);
+
+        std::vector<std::vector<float>> styles;
+        styles.push_back(loadMonoAtRate(ix->files[fa].path, neural.modelRate, 4.0f));
+        if (styles[0].size() < 1024) { logf("neural: style file unreadable"); return false; }
+        if (morph > 0.001f && fb != fa) {
+            std::vector<float> b = loadMonoAtRate(ix->files[fb].path,
+                                                  neural.modelRate, 4.0f);
+            if (b.size() >= 1024) styles.push_back(b);
+        }
+
+        float lenSec = paramReal(pNLen, params[pNLen]);
+        float chaos  = paramReal(pNChaos, params[pNChaos]);
+        logf("neural: generating %.1fs, chaos %d%%, morph %d%%, seed %08X",
+             lenSec, (int)(chaos * 100), (int)(morph * 100), neuralSeed);
+
+        std::vector<float> mono;
+        if (!neural.generate(styles, lenSec, chaos, morph, neuralSeed, mono)) {
+            logf("neural: generate failed - %s", neural.err.c_str());
+            return false;
+        }
+
+        /* pitch spread: random transpose within +-spread, by resampling */
+        float spread = paramReal(pNSpread, params[pNSpread]);
+        if (spread > 0.01f) {
+            r = r * 1664525u + 1013904223u;
+            float semis = (((r >> 8) & 0xFFFF) / 32768.0f - 1.0f) * spread;
+            double f = pow(2.0, semis / 12.0);
+            int n2 = (int)(mono.size() / f);
+            if (n2 > 64) {
+                std::vector<float> shifted((size_t)n2);
+                for (int i = 0; i < n2; i++) {
+                    double sp = i * f;
+                    int i0 = (int)sp;
+                    if (i0 >= (int)mono.size() - 1) i0 = (int)mono.size() - 2;
+                    float t = (float)(sp - i0);
+                    shifted[(size_t)i] = mono[(size_t)i0] +
+                        (mono[(size_t)i0 + 1] - mono[(size_t)i0]) * t;
+                }
+                mono.swap(shifted);
+                logf("neural: pitch spread applied %+.1f st", semis);
+            }
+        }
+        neuralSeed = neuralSeed * 1664525u + 1013904223u;
+
+        neuralBuf.resize(mono.size() * 2);
+        for (size_t i = 0; i < mono.size(); i++) {
+            neuralBuf[i * 2] = mono[i];
+            neuralBuf[i * 2 + 1] = mono[i];
+        }
+        neuralRate = neural.modelRate;
+
+        LoadedBuf* b = new LoadedBuf();
+        b->data = neuralBuf;
+        b->frames = (int)mono.size();
+        b->rate = neuralRate;
+        engine.aud.publish(b);
+        engine.auditionStart();
+        logf("neural: %.2fs one-shot - playing", mono.size() / (float)neuralRate);
+        return true;
+    }
+
+    bool exportNeural(const char* outPath)
+    {
+        if (neuralBuf.empty()) { logf("neural export: nothing generated yet"); return false; }
+        bool ok = wav_write16(outPath, neuralBuf.data(),
+                              (int)(neuralBuf.size() / 2), neuralRate);
+        logf(ok ? "exported neural -> %s" : "neural export FAILED: %s", outPath);
+        return ok;
+    }
 };
 
 static Plugin* self(AEffect* e) { return (Plugin*)e->object; }
@@ -382,6 +533,10 @@ static void copyStr(void* dst, const char* src, size_t max)
 static void paramName(int idx, char* out)
 {
     if (idx < PARAM_LAYER0) { snprintf(out, 16, "%s", kParamMeta[idx].name); return; }
+    if (idx == pNLen)    { strcpy(out, "NLen");   return; }
+    if (idx == pNChaos)  { strcpy(out, "NChaos"); return; }
+    if (idx == pNMorph)  { strcpy(out, "NMorph"); return; }
+    if (idx == pNSpread) { strcpy(out, "NSprd");  return; }
     int lay = (idx - PARAM_LAYER0) / PPLAY, off = (idx - PARAM_LAYER0) % PPLAY;
     snprintf(out, kVstMaxParamStrLen + 1, "L%d %s", lay + 1, kLayNames[off]);
 }
@@ -393,7 +548,10 @@ static void paramDisplay(Plugin* p, int idx, char* out)
     if (idx == pTuneKey) { snprintf(out, 16, "%s", v >= 0.5f ? "On" : "Off"); return; }
     if (idx == pMinLen || idx == pMaxLen) { snprintf(out, 16, "%.2f", v); return; }
     if (idx == pMaxMB) { snprintf(out, 16, "%d", (int)(v + 0.5f)); return; }
-    if (idx >= PARAM_LAYER0) {
+    if (idx == pNLen) { snprintf(out, 16, "%.1f", v); return; }
+    if (idx == pNChaos || idx == pNMorph) { snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); return; }
+    if (idx == pNSpread) { snprintf(out, 16, "%.1f", v); return; }
+    if (idx >= PARAM_LAYER0 && idx < LAYER_PARAMS_END) {
         int off = (idx - PARAM_LAYER0) % PPLAY;
         if (off == 2) { snprintf(out, 16, "%+.1f", v); return; }
         snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); return;
@@ -531,7 +689,10 @@ static intptr_t dispatcher(AEffect* e, int32_t opcode, int32_t index,
     case effGetParamLabel:
         if (index >= 0 && index < NUM_PARAMS) {
             const char* lbl = "";
-            if (index < PARAM_LAYER0) lbl = kParamMeta[index].label;
+            if (index < PARAM_LAYER0)      lbl = kParamMeta[index].label;
+            else if (index == pNLen)       lbl = "s";
+            else if (index == pNSpread)    lbl = "st";
+            else if (index >= LAYER_PARAMS_END) lbl = "%";   /* NChaos/NMorph */
             else if ((index - PARAM_LAYER0) % PPLAY == 2) lbl = "st";
             else lbl = "%";
             copyStr(ptr, lbl, kVstMaxParamStrLen + 1);
@@ -591,6 +752,10 @@ AEffect* VSTPluginMain(audioMasterCallback host)
         p->params[b + 1] = 0.50f;   /* pan  */
         p->params[b + 2] = 0.50f;   /* tune */
     }
+    p->params[pNLen]    = 0.35f;    /* ~1 s   */
+    p->params[pNChaos]  = 0.35f;
+    p->params[pNMorph]  = 0.00f;
+    p->params[pNSpread] = 0.00f;
 
     e->magic            = kEffectMagic;
     e->dispatcher       = dispatcher;
