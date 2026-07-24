@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string>
 
 #define PLUGIN_NAME    "Sample Librarian"
@@ -79,8 +80,35 @@ struct Plugin {
     int   selected = -1;
     uint32_t rng = 0xA5A5A5u;
 
+    /* lasso selection + synthesized one-shot (GUI thread only) */
+    std::vector<int> lassoSel;             /* file indices               */
+    std::vector<float> synthBuf;           /* last synthesized one-shot  */
+    uint32_t synthSeed = 0x5EED0001u;
+
+    /* scrolling message console (GUI thread only) */
+    static const int LOG_LINES = 64;
+    std::string logLines[LOG_LINES];
+    int logHead = 0, logCount = 0;
+
     void*  editor = nullptr;
     std::string chunk;
+
+    void logf(const char* fmt, ...)
+    {
+        char buf[256];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        logLines[logHead] = buf;
+        logHead = (logHead + 1) % LOG_LINES;
+        if (logCount < LOG_LINES) logCount++;
+    }
+    const std::string& logLine(int back) const   /* 0 = newest */
+    {
+        int idx = (logHead - 1 - back + 2 * LOG_LINES) % LOG_LINES;
+        return logLines[idx];
+    }
 
     ~Plugin()
     {
@@ -138,13 +166,20 @@ struct Plugin {
     void randomize()
     {
         LibIndex* ix = indexLive.load();
-        if (!ix || ix->files.empty()) return;
+        if (!ix || ix->files.empty()) { logf("randomize: scan a library first"); return; }
         rng = rng * 1664525u + 1013904223u;
         lib_makePalette(*ix, settings(), combos, rng);
         selected = -1;
+        int made = 0;
+        for (int i = 0; i < 12; i++) if (combos[i].nLayers) made++;
+        logf("randomize: %d combos dealt from %d files", made,
+             (int)ix->files.size());
     }
 
-    /* load a combo's audio into the 4 slots and make it the live one */
+    /* load a combo's audio into the 4 slots and make it the live one.
+     * Unused slots get an EMPTY buffer, not nullptr: publish(nullptr) is
+     * indistinguishable from "no pending" in adopt(), so a previous combo's
+     * layers 3/4 would keep sounding — an empty buffer actually clears. */
     void selectCombo(int i)
     {
         if (i < 0 || i >= 12 || combos[i].nLayers == 0) return;
@@ -154,7 +189,15 @@ struct Plugin {
             LoadedBuf* b = nullptr;
             if (s < c.nLayers)
                 b = lib_loadLayer(c.lay[s].path, c.lay[s].semis);
+            if (!b) b = new LoadedBuf();          /* empty = silent slot */
             engine.slots[s].publish(b);
+        }
+        logf("combo #%d: %d layers loaded", i + 1, c.nLayers);
+        for (int l = 0; l < c.nLayers; l++) {
+            size_t sl = c.lay[l].path.find_last_of("/\\");
+            std::string nm = sl == std::string::npos ? c.lay[l].path
+                                                     : c.lay[l].path.substr(sl + 1);
+            logf("  L%d %s (%+.1f st)", l + 1, nm.c_str(), c.lay[l].semis);
         }
     }
 
@@ -170,8 +213,108 @@ struct Plugin {
         lib_renderCombo(bufs, voiceParams(), engine.sampleRate, mix);
         for (int s = 0; s < 4; s++) delete bufs[s];
         if (mix.empty()) return false;
-        return wav_write16(outPath, mix.data(), (int)(mix.size() / 2),
-                           (int)engine.sampleRate);
+        bool ok = wav_write16(outPath, mix.data(), (int)(mix.size() / 2),
+                              (int)engine.sampleRate);
+        if (ok) logf("exported combo #%d -> %s", selected + 1, outPath);
+        else    logf("export FAILED: %s", outPath);
+        return ok;
+    }
+
+    /* nearest indexed file to a constellation position (normalized coords) */
+    int nearestFile(float cx, float cy, float maxDist)
+    {
+        LibIndex* ix = indexLive.load();
+        if (!ix) return -1;
+        float best = maxDist * maxDist;
+        int bestI = -1;
+        for (int di : ix->drawList) {
+            const FileFeat& f = ix->files[di];
+            float dx = f.cx - cx, dy = f.cy - cy;
+            float d = dx * dx + dy * dy;
+            if (d < best) { best = d; bestI = di; }
+        }
+        return bestI;
+    }
+
+    /* click-to-audition: play a snippet + log its analysis */
+    void auditionFile(int fi)
+    {
+        LibIndex* ix = indexLive.load();
+        if (!ix || fi < 0 || fi >= (int)ix->files.size()) return;
+        const FileFeat& f = ix->files[fi];
+        LoadedBuf* b = lib_loadLayer(f.path, 0.0f, 2.5f);
+        if (!b) { logf("audition failed: %s", f.path.c_str()); return; }
+        engine.aud.publish(b);
+        engine.auditionStart();
+
+        size_t sl = f.path.find_last_of("/\\");
+        std::string nm = sl == std::string::npos ? f.path : f.path.substr(sl + 1);
+        char note[24]; lib_noteName(f.pitchHz, note, sizeof(note));
+        int peakBand = 0;
+        for (int k = 1; k < NBANDS; k++)
+            if (f.band[k] > f.band[peakBand]) peakBand = k;
+        const char* reg = peakBand < 5 ? "low" : peakBand < 11 ? "mid" : "high";
+        logf("> %s  %.1fs %dHz", nm.c_str(), f.durationSec, f.sampleRate);
+        logf("  pitch %s (%.0fHz, %d%%)  spectrum %s-heavy",
+             note, f.pitchHz, (int)(f.pitchConf * 100), reg);
+    }
+
+    /* lasso: normalized polygon -> file selection */
+    void lassoSelect(const float* px, const float* py, int n)
+    {
+        lassoSel.clear();
+        LibIndex* ix = indexLive.load();
+        if (!ix || n < 3) return;
+        for (int di : ix->drawList) {
+            const FileFeat& f = ix->files[di];
+            if (lib_pointInPoly(px, py, n, f.cx, f.cy))
+                lassoSel.push_back(di);
+        }
+        logf("lasso: %d sounds selected", (int)lassoSel.size());
+    }
+
+    /* style synthesis from the lasso selection */
+    bool synthesize()
+    {
+        LibIndex* ix = indexLive.load();
+        if (!ix || lassoSel.empty()) { logf("synth: lasso a region first"); return false; }
+        std::vector<std::string> paths;
+        uint32_t r = synthSeed;
+        std::vector<int> pool = lassoSel;
+        for (int i = 0; i < 8 && !pool.empty(); i++) {
+            r = r * 1664525u + 1013904223u;
+            size_t pick = (r >> 8) % pool.size();
+            paths.push_back(ix->files[pool[pick]].path);
+            pool.erase(pool.begin() + pick);
+        }
+        logf("synth: style from %d of %d sounds, seed %08X",
+             (int)paths.size(), (int)lassoSel.size(), synthSeed);
+        std::vector<float> out;
+        if (!lib_synthStyle(paths, synthSeed, engine.sampleRate, out)) {
+            logf("synth: failed (unreadable style set)");
+            return false;
+        }
+        synthBuf = out;
+        synthSeed = synthSeed * 1664525u + 1013904223u;   /* next roll */
+
+        LoadedBuf* b = new LoadedBuf();
+        b->data = out;
+        b->frames = (int)(out.size() / 2);
+        b->rate = (int)engine.sampleRate;
+        engine.aud.publish(b);
+        engine.auditionStart();
+        logf("synth: %.2fs one-shot rendered - playing",
+             b->frames / engine.sampleRate);
+        return true;
+    }
+
+    bool exportSynth(const char* outPath)
+    {
+        if (synthBuf.empty()) { logf("synth export: nothing synthesized yet"); return false; }
+        bool ok = wav_write16(outPath, synthBuf.data(),
+                              (int)(synthBuf.size() / 2), (int)engine.sampleRate);
+        logf(ok ? "exported synth -> %s" : "synth export FAILED: %s", outPath);
+        return ok;
     }
 };
 

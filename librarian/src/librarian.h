@@ -605,6 +605,13 @@ public:
     int  stage = 0;                 /* 0 idle, 1 attack, 2 hold, 3 release */
     double pos[NSLOTS] = {0, 0, 0, 0};
 
+    /* audition slot: plays a snippet or a synthesized one-shot once, at
+     * native pitch, independent of the MIDI voice */
+    LibSlot aud;
+    std::atomic<int> audTrig{0};
+    int    audSeen = 0;
+    double audPos = 0;
+
     ~LibEngine()
     {
         for (LibSlot& s : slots) {
@@ -612,6 +619,9 @@ public:
             delete s.pending.exchange(nullptr);
             delete s.retire;
         }
+        delete aud.live.exchange(nullptr);
+        delete aud.pending.exchange(nullptr);
+        delete aud.retire;
     }
 
     void setSampleRate(float sr) { sampleRate = sr > 0 ? sr : 44100; }
@@ -623,52 +633,84 @@ public:
     }
     void noteOff(int n) { if (n == note) gate = false; }
 
+    /* GUI thread: publish then retrigger */
+    void auditionStart() { audTrig.fetch_add(1); }
+
     void process(float** out, int frames, const LibVoiceParams& vp)
     {
         for (LibSlot& s : slots) s.adopt();
-        if (stage == 0) return;
+        aud.adopt();
+
+        int t = audTrig.load();
+        if (t != audSeen) { audSeen = t; audPos = 0; }
+        LoadedBuf* ab = aud.live.load();
+        if (ab && ab->frames < 2) ab = nullptr;
+
+        bool voiceOn = stage != 0;
+        if (!voiceOn && !ab) return;
 
         float attStep = 1.0f / fmaxf(1.0f, vp.attackMs * 0.001f * sampleRate);
         float relStep = 1.0f / fmaxf(1.0f, vp.releaseMs * 0.001f * sampleRate);
 
         for (int i = 0; i < frames; i++) {
-            if (!gate && stage != 3 && stage != 0) stage = 3;
-            if (stage == 1) {
-                env += attStep;
-                if (env >= 1) { env = 1; stage = 2; }
-            } else if (stage == 3) {
-                env -= relStep;
-                if (env <= 0) { env = 0; stage = 0; break; }
-            }
-
             float mixL = 0, mixR = 0;
-            bool anyLive = false;
-            for (int sIdx = 0; sIdx < NSLOTS; sIdx++) {
-                LoadedBuf* b = slots[sIdx].live.load();
-                if (!b || b->frames < 2) continue;
-                double p = pos[sIdx];
-                if (p >= b->frames - 1) continue;
-                anyLive = true;
-                int i0 = (int)p;
-                float t = (float)(p - i0);
-                const float* d = &b->data[(size_t)i0 * 2];
-                float L = d[0] + (d[2] - d[0]) * t;
-                float R = d[1] + (d[3] - d[1]) * t;
-                float pan = vp.lay[sIdx].pan;
-                float gl = fminf(1.0f, 2.0f * (1.0f - pan));
-                float gr = fminf(1.0f, 2.0f * pan);
-                float g = vp.lay[sIdx].vol;
-                mixL += L * g * gl; mixR += R * g * gr;
 
-                double semis = (note >= 0 ? note - 60 : 0) + b->semis +
-                               vp.lay[sIdx].semis;
-                pos[sIdx] = p + pow(2.0, semis / 12.0) *
-                                ((double)b->rate / sampleRate);
+            /* ---- MIDI voice over the combo slots ---- */
+            if (stage != 0) {
+                if (!gate && stage != 3) stage = 3;
+                if (stage == 1) {
+                    env += attStep;
+                    if (env >= 1) { env = 1; stage = 2; }
+                } else if (stage == 3) {
+                    env -= relStep;
+                    if (env <= 0) { env = 0; stage = 0; }
+                }
             }
-            if (!anyLive && stage != 3) stage = 3;   /* all layers finished */
+            if (stage != 0) {
+                float vL = 0, vR = 0;
+                bool anyLive = false;
+                for (int sIdx = 0; sIdx < NSLOTS; sIdx++) {
+                    LoadedBuf* b = slots[sIdx].live.load();
+                    if (!b || b->frames < 2) continue;
+                    double p = pos[sIdx];
+                    if (p >= b->frames - 1) continue;
+                    anyLive = true;
+                    int i0 = (int)p;
+                    float ft = (float)(p - i0);
+                    const float* d = &b->data[(size_t)i0 * 2];
+                    float L = d[0] + (d[2] - d[0]) * ft;
+                    float R = d[1] + (d[3] - d[1]) * ft;
+                    float pan = vp.lay[sIdx].pan;
+                    float gl = fminf(1.0f, 2.0f * (1.0f - pan));
+                    float gr = fminf(1.0f, 2.0f * pan);
+                    float g = vp.lay[sIdx].vol;
+                    vL += L * g * gl; vR += R * g * gr;
 
-            out[0][i] += mixL * env * vp.master;
-            out[1][i] += mixR * env * vp.master;
+                    double semis = (note >= 0 ? note - 60 : 0) + b->semis +
+                                   vp.lay[sIdx].semis;
+                    pos[sIdx] = p + pow(2.0, semis / 12.0) *
+                                    ((double)b->rate / sampleRate);
+                }
+                if (!anyLive && stage != 3) stage = 3;
+                mixL += vL * env; mixR += vR * env;
+            }
+
+            /* ---- audition snippet (native pitch, one-shot) ---- */
+            if (ab && audPos < ab->frames - 1) {
+                int i0 = (int)audPos;
+                float ft = (float)(audPos - i0);
+                const float* d = &ab->data[(size_t)i0 * 2];
+                float g = 0.9f;
+                double remain = ab->frames - 1 - audPos;
+                if (audPos < 64) g *= (float)(audPos / 64.0);
+                if (remain < 1024) g *= (float)(remain / 1024.0);
+                mixL += (d[0] + (d[2] - d[0]) * ft) * g;
+                mixR += (d[1] + (d[3] - d[1]) * ft) * g;
+                audPos += (double)ab->rate / sampleRate;
+            }
+
+            out[0][i] += mixL * vp.master;
+            out[1][i] += mixR * vp.master;
         }
     }
 };
@@ -738,6 +780,178 @@ static inline LoadedBuf* lib_loadLayer(const std::string& path, float semis,
     b->semis = semis;
     b->path = path;
     return b;
+}
+
+/* ----------------------------------------------------------- misc utils */
+
+/* Ray-cast point-in-polygon over normalized constellation coords. */
+static inline bool lib_pointInPoly(const float* px, const float* py, int n,
+                                   float x, float y)
+{
+    bool in = false;
+    for (int i = 0, j = n - 1; i < n; j = i++) {
+        if (((py[i] > y) != (py[j] > y)) &&
+            (x < (px[j] - px[i]) * (y - py[i]) / (py[j] - py[i]) + px[i]))
+            in = !in;
+    }
+    return in;
+}
+
+/* "A2 +12c" style note name from a frequency. */
+static inline void lib_noteName(float hz, char* out, size_t outLen)
+{
+    static const char* names[12] = { "C", "C#", "D", "D#", "E", "F",
+                                     "F#", "G", "G#", "A", "A#", "B" };
+    if (hz < 20.0f) { snprintf(out, outLen, "-"); return; }
+    float midi = 69.0f + 12.0f * log2f(hz / 440.0f);
+    int m = (int)floorf(midi + 0.5f);
+    int cents = (int)((midi - m) * 100.0f);
+    int pc = m % 12; if (pc < 0) pc += 12;
+    snprintf(out, outLen, "%s%d %+dc", names[pc], m / 12 - 1, cents);
+}
+
+/* ----------------------------------------------- style synthesis engine
+ *
+ * "Synthesize a new one-shot using the selected audio as style": a compact
+ * spectral-statistics generative model (audio texture synthesis). The
+ * lassoed files' STFTs are pooled into per-bin log-magnitude mean/variance;
+ * a new sound is drawn from that distribution frame by frame — temporally
+ * smoothed per bin so it breathes rather than flickers, phases advanced at
+ * each bin's own frequency (with jitter) for coherence, independent phase
+ * streams per channel for stereo width, shaped by a percussive one-shot
+ * envelope. Deterministic for a given seed.
+ */
+static const int SY_N = 1024, SY_HOP = 256, SY_BINS = SY_N / 2 + 1;
+
+static inline uint32_t lib_rng32(uint32_t* s)
+{
+    *s ^= *s << 13; *s ^= *s >> 17; *s ^= *s << 5;
+    return *s;
+}
+static inline float lib_rngf(uint32_t* s)          /* 0..1 */
+{
+    return (lib_rng32(s) >> 8) * (1.0f / 16777216.0f);
+}
+static inline float lib_rngn(uint32_t* s)          /* ~N(0,1)-ish */
+{
+    return (lib_rngf(s) + lib_rngf(s) + lib_rngf(s)) * 2.0f - 3.0f;
+}
+
+static inline bool lib_synthStyle(const std::vector<std::string>& paths,
+                                  uint32_t seed, float sampleRate,
+                                  std::vector<float>& outLR)
+{
+    outLR.clear();
+    if (paths.empty()) return false;
+    if (sampleRate < 8000) sampleRate = 44100;
+
+    /* ---- pool per-bin log-mag statistics across the style set ---- */
+    std::vector<double> sum(SY_BINS, 0.0), sumsq(SY_BINS, 0.0);
+    long nFramesTotal = 0;
+
+    static float win[SY_N];
+    static bool winInit = false;
+    if (!winInit) {
+        for (int n = 0; n < SY_N; n++)
+            win[n] = 0.5f - 0.5f * cosf(LIB_TWO_PI * n / SY_N);
+        winInit = true;
+    }
+
+    float re[SY_N], im[SY_N];
+    for (size_t p = 0; p < paths.size() && p < 8; p++) {
+        WavData w = wav_load_partial(paths[p].c_str(), 44100 * 3);
+        if (!w.ok || w.frames < SY_N) continue;
+        std::vector<float> mono((size_t)w.frames);
+        for (int i = 0; i < w.frames; i++)
+            mono[i] = 0.5f * (w.samples[(size_t)i * 2] + w.samples[(size_t)i * 2 + 1]);
+
+        int frames = 0;
+        for (int st = 0; st + SY_N <= w.frames && frames < 48; st += SY_N / 2, frames++) {
+            for (int n = 0; n < SY_N; n++) { re[n] = mono[(size_t)st + n] * win[n]; im[n] = 0; }
+            fft_radix2(re, im, SY_N, 0);
+            for (int k = 0; k < SY_BINS; k++) {
+                /* map source bin freq into the output rate's bin space */
+                float hz = (float)k * w.sampleRate / SY_N;
+                int dk = (int)(hz * SY_N / sampleRate + 0.5f);
+                if (dk < 0 || dk >= SY_BINS) continue;
+                float mag = sqrtf(re[k] * re[k] + im[k] * im[k]);
+                double lm = log((double)mag + 1e-6);
+                sum[dk] += lm; sumsq[dk] += lm * lm;
+            }
+            nFramesTotal++;
+        }
+    }
+    if (nFramesTotal < 4) return false;
+
+    std::vector<float> mean(SY_BINS), sdev(SY_BINS);
+    for (int k = 0; k < SY_BINS; k++) {
+        double m = sum[k] / nFramesTotal;
+        double v = sumsq[k] / nFramesTotal - m * m;
+        mean[k] = (float)m;
+        sdev[k] = (float)sqrt(v > 0 ? v : 0);
+        if (sdev[k] > 2.5f) sdev[k] = 2.5f;
+    }
+
+    /* ---- draw a one-shot from the model ---- */
+    uint32_t rng = seed | 1;
+    float lenSec = 0.8f + lib_rngf(&rng) * 1.2f;             /* 0.8..2.0 s */
+    int outFrames = (int)(lenSec * sampleRate);
+    int nHops = outFrames / SY_HOP + 4;
+    outFrames = nHops * SY_HOP + SY_N;
+    outLR.assign((size_t)outFrames * 2, 0.0f);
+
+    float decay = 2.0f + lib_rngf(&rng) * 4.0f;              /* env slope  */
+    std::vector<float> g(SY_BINS, 0.0f);                     /* smoothed dev */
+    std::vector<float> ph[2];
+    ph[0].assign(SY_BINS, 0.0f); ph[1].assign(SY_BINS, 0.0f);
+    uint32_t phSeed[2] = { seed ^ 0x1111u, seed ^ 0x9999u };
+    for (int k = 0; k < SY_BINS; k++) {
+        ph[0][k] = lib_rngf(&phSeed[0]) * LIB_TWO_PI;
+        ph[1][k] = lib_rngf(&phSeed[1]) * LIB_TWO_PI;
+    }
+
+    for (int h = 0; h < nHops; h++) {
+        float tNorm = (float)h / nHops;
+        float env = expf(-decay * tNorm) * (1.0f - expf(-(float)(h + 1) * 2.0f));
+
+        for (int k = 0; k < SY_BINS; k++)                    /* breathe */
+            g[k] = 0.72f * g[k] + 0.28f * lib_rngn(&rng);
+
+        for (int ch = 0; ch < 2; ch++) {
+            for (int n = 0; n < SY_N; n++) { re[n] = 0; im[n] = 0; }
+            for (int k = 1; k < SY_BINS - 1; k++) {
+                float mag = expf(mean[k] + sdev[k] * g[k]) * env;
+                float jit = (lib_rngf(&phSeed[ch]) - 0.5f) * 0.35f;
+                ph[ch][k] += LIB_TWO_PI * SY_HOP * k / SY_N + jit;
+                re[k] = mag * cosf(ph[ch][k]);
+                im[k] = mag * sinf(ph[ch][k]);
+            }
+            for (int k = 1; k < SY_N / 2; k++) {
+                re[SY_N - k] = re[k]; im[SY_N - k] = -im[k];
+            }
+            fft_radix2(re, im, SY_N, 1);
+            int base = h * SY_HOP;
+            for (int n = 0; n < SY_N; n++) {
+                int idx = base + n;
+                if (idx >= outFrames) break;
+                outLR[(size_t)idx * 2 + ch] += re[n] * win[n];
+            }
+        }
+    }
+
+    /* normalize to a healthy one-shot level */
+    float peak = 1e-9f;
+    for (float v : outLR) { float a = fabsf(v); if (a > peak) peak = a; }
+    float norm = 0.85f / peak;
+    for (float& v : outLR) v *= norm;
+
+    /* trim the silent tail padding */
+    int end = outFrames - 1;
+    while (end > SY_N && fabsf(outLR[(size_t)end * 2]) < 1e-4f &&
+           fabsf(outLR[(size_t)end * 2 + 1]) < 1e-4f)
+        end--;
+    outLR.resize((size_t)(end + 1) * 2);
+    return true;
 }
 
 #endif /* LIBRARIAN_H */

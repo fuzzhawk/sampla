@@ -37,6 +37,20 @@ Tune, the combo's constellation lights up in the map) and play it from a
 **EXPORT WAV** renders the combo (layers mixed at their current knob
 settings) to a new 16-bit WAV. **Original files are never modified.**
 
+**Audition & console.** Click any star in the constellation to hear a
+snippet of it (native pitch, no MIDI needed); its analysis — duration, pitch
+with note name and confidence, spectral region — is logged to the scrolling
+message console under the palette, alongside scan progress, combo loads,
+exports and synthesis activity.
+
+**Lasso + style synthesis.** Click-drag on the constellation to lasso a
+region; the selected sounds become the *style* for the **SYNTHESIZE**
+button, which draws a brand-new one-shot from a compact spectral-statistics
+generative model of the selection (per-bin log-magnitude mean/variance,
+temporally-smoothed stochastic resynthesis, stereo phase decorrelation,
+percussive envelope). Every press re-rolls a new deterministic seed; the
+result auditions immediately and **EXPORT SYNTH** writes it to a WAV.
+
 Params (19, all automatable): Master, Atk, Rel, TuneKey, MinLen, MaxLen,
 MaxMB, then Vol/Pan/Tune for layers 1–4. The chunk persists params, the
 library path, and all 12 combos with the selection.

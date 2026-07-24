@@ -181,6 +181,69 @@ int main()
       CHECK(ok2 && ix2.files.size() == ix.files.size(),
             "rescan via cache keeps the same index"); }
 
+    /* --- REGRESSION: switching to a smaller combo silences slots 3/4.
+     * publish(nullptr) was indistinguishable from "no pending", so old
+     * layers kept sounding; an empty LoadedBuf must actually clear. --- */
+    { LibEngine eng2;
+      eng2.setSampleRate(44100);
+      for (int s = 0; s < 4; s++)                       /* 4-layer combo */
+          eng2.slots[s].publish(lib_loadLayer(ix.files[iLow].path, 0));
+      LibVoiceParams vp;
+      std::vector<float> L(256), R(256); float* out[2] = { L.data(), R.data() };
+      eng2.noteOn(60);
+      eng2.process(out, 256, vp);                       /* adopt 4 layers */
+      for (int s = 2; s < 4; s++)                       /* now a 2-layer  */
+          eng2.slots[s].publish(new LoadedBuf());
+      eng2.process(out, 256, vp);                       /* adopt clears   */
+      LoadedBuf* s2 = eng2.slots[2].live.load();
+      LoadedBuf* s3 = eng2.slots[3].live.load();
+      CHECK(s2 && s2->frames == 0 && s3 && s3->frames == 0,
+            "slot clear: empty buffer replaces old layers 3/4"); }
+
+    /* --- point-in-polygon (lasso) --- */
+    { float px[4] = { 0.2f, 0.8f, 0.8f, 0.2f };
+      float py[4] = { 0.2f, 0.2f, 0.8f, 0.8f };
+      CHECK(lib_pointInPoly(px, py, 4, 0.5f, 0.5f), "lasso: inside detected");
+      CHECK(!lib_pointInPoly(px, py, 4, 0.9f, 0.5f), "lasso: outside rejected"); }
+
+    /* --- audition voice plays without MIDI --- */
+    { LibEngine eng3;
+      eng3.setSampleRate(44100);
+      eng3.aud.publish(lib_loadLayer(ix.files[iA220].path, 0, 2.0f));
+      eng3.auditionStart();
+      LibVoiceParams vp;
+      std::vector<float> L(512), R(512); float* out[2] = { L.data(), R.data() };
+      double sum = 0; bool fin = true;
+      for (int b = 0; b < 40; b++) {
+          std::fill(L.begin(), L.end(), 0.0f);
+          std::fill(R.begin(), R.end(), 0.0f);
+          eng3.process(out, 512, vp);
+          for (float v : L) { if (!std::isfinite(v)) fin = false; sum += fabs(v); }
+      }
+      CHECK(fin && sum > 10.0, "audition: snippet plays without a note"); }
+
+    /* --- style synthesis --- */
+    { std::vector<std::string> style = { ix.files[iLow].path,
+                                         ix.files[iMid].path,
+                                         ix.files[iHi].path };
+      std::vector<float> s1, s2v;
+      bool okA = lib_synthStyle(style, 0x1234, 44100, s1);
+      bool okB = lib_synthStyle(style, 0x1234, 44100, s2v);
+      CHECK(okA && okB, "synth: style model renders");
+      int fr = (int)(s1.size() / 2);
+      CHECK(fr > 44100 / 2 && fr < 44100 * 3, "synth: one-shot length sane");
+      bool fin = true; double e = 0; float peak = 0;
+      for (float v : s1) { if (!std::isfinite(v)) fin = false;
+          e += fabs(v); if (fabsf(v) > peak) peak = fabsf(v); }
+      CHECK(fin, "synth: output finite");
+      CHECK(e > 50.0 && peak <= 0.86f, "synth: audible and normalized");
+      CHECK(s1 == s2v, "synth: deterministic for a given seed");
+      std::vector<float> s3v;
+      lib_synthStyle(style, 0x9999, 44100, s3v);
+      CHECK(s3v != s1, "synth: different seed, different one-shot");
+      CHECK(wav_write16("/tmp/sl_synth.wav", s1.data(), fr, 44100),
+            "synth: exports as wav"); }
+
     printf(failures ? "\n%d CHECK(S) FAILED\n" : "\nALL LIBRARIAN CHECKS PASSED\n",
            failures);
     return failures ? 1 : 0;

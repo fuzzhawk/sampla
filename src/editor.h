@@ -162,7 +162,7 @@ static void drawLane(HDC dc, Plugin* p, int l)
 
     Sample* s = p->engine.layers[l].live.load();
     SetTextColor(dc, RGB(190, 196, 208));
-    const char* fname = "— drop a .wav (or double-click) —";
+    const char* fname = "- drop a .wav (or double-click) -";
     std::string base;
     if (s && !s->path.empty()) {
         size_t sl = s->path.find_last_of("/\\");
@@ -265,7 +265,7 @@ static void drawGlitchBar(HDC dc, Plugin* p)
     TextOutA(dc, 12, GBAR_Y + 8, "GLITCH SEQ", 10);
     SetTextColor(dc, RGB(140, 146, 160));
     const char* legend =
-        "click: cycle algo  ·  right-click: clear  ·  - Stut St16 Rev Tape Half Gate Scrm";
+        "click: cycle algo | right-click: clear | - Stut St16 Rev Tape Half Gate Scrm";
     TextOutA(dc, 110, GBAR_Y + 10, legend, (int)strlen(legend));
 
     int cur = p->engine.glitchStep.load();
@@ -323,7 +323,7 @@ static void paintEditor(HWND hwnd, Plugin* p)
     SetTextColor(dc, RGB(230, 234, 244));
     TextOutA(dc, WAVE_X, 7, "GRANULAR SAMPLER", 16);
     SetTextColor(dc, RGB(140, 146, 160));
-    const char* hint = "drag knobs vertically · drag loop edges · dbl-click wave = load";
+    const char* hint = "drag knobs vertically | drag loop edges | dbl-click wave = load";
     TextOutA(dc, 170, 9, hint, (int)strlen(hint));
 
     /* chaos seed box */
