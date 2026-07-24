@@ -17,7 +17,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++-mingw-w64-x86-64 g++-mingw-w64-i686 wine64
 
-      - name: Build plugin (x64 + x86)
+      - name: Build plugins (x64 + x86)
         run: make
 
       - name: Build test host
@@ -26,15 +26,19 @@ jobs:
       - name: Engine unit test (native DSP)
         run: make enginetest
 
+      - name: Librarian unit test (native)
+        run: make librariantest
+
       - name: Smoke test under Wine (x64)
         run: |
           export WINEDEBUG=-all
           wine build/host64.exe build/GranularSampler_x64.dll
+          wine build/host64.exe build/SampleLibrarian_x64.dll
 
       - name: Upload DLLs
         uses: actions/upload-artifact@v4
         with:
-          name: GranularSampler-dlls
+          name: sampla-plugin-dlls
           path: build/*.dll
 
       - name: Attach to release

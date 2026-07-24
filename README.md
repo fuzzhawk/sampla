@@ -1,8 +1,49 @@
-# Granular Sampler
+# Sampla — Granular Sampler + Sample Librarian
 
-A 3-layer granular sampler VST2 instrument for Ableton Live 9 on Windows 10,
-with a native Win32 GUI. Built entirely on GitHub Actions — no local toolchain
-required.
+Two VST2 instruments for Ableton Live 9 on Windows 10, native Win32 GUIs,
+built entirely on GitHub Actions — no local toolchain required. The CI
+artifact contains x64 + x86 DLLs for both:
+
+- **Granular Sampler** (`GranularSampler_*.dll`) — 3-layer granular sampler
+  with a tempo-synced glitch sequencer. Sources in `src/`, docs below.
+- **Sample Librarian** (`SampleLibrarian_*.dll`) — scans your sample library,
+  spectrally fingerprints every WAV, and layers 2–4 files that match in tonal
+  content but occupy different parts of the spectrum. Sources in `librarian/`.
+
+## Sample Librarian
+
+Point it at your library folder (click the path box), press **SCAN**, and it
+walks every `.wav` recursively — filtered by **MinLen / MaxLen** (seconds) and
+**MaxMB** (skip oversized files) — computing a spectral fingerprint per file:
+a 16-band energy profile, a 12-bin chroma (tonal content), and a pitch
+estimate with confidence (FFT autocorrelation). Results are cached in a
+`.sample_librarian.idx` file at the library root, so rescanning a ~100k-file
+library only analyzes new or changed files. Scanning runs on a background
+thread with live progress; a large cold scan is a get-a-coffee affair, the
+cached rescan takes seconds.
+
+The library is drawn as a **constellation** (2-component PCA over the
+fingerprints), so similar sounds cluster together. **RANDOMIZE** deals 12
+combos into the palette; each combo picks a seed file plus 1–3 partners that
+**match in chroma** but have **low spectral overlap** — layers that fit
+tonally while occupying different frequency ranges. With **Tune to key** on,
+partners are transposed (chroma rotation + exact-Hz refinement when pitch is
+confident) so everything lands in the same key — which also widens the pool
+of possible matches.
+
+Click a combo button to open its **layer controls** (per-layer Vol / Pan /
+Tune, the combo's constellation lights up in the map) and play it from a
+**MIDI keyboard** — C4 is native pitch, monophonic, with Attack/Release.
+**EXPORT WAV** renders the combo (layers mixed at their current knob
+settings) to a new 16-bit WAV. **Original files are never modified.**
+
+Params (19, all automatable): Master, Atk, Rel, TuneKey, MinLen, MaxLen,
+MaxMB, then Vol/Pan/Tune for layers 1–4. The chunk persists params, the
+library path, and all 12 combos with the selection.
+
+---
+
+# Granular Sampler
 
 ## Status: Milestone 4 — glitch sequencer + wav operators
 
@@ -162,6 +203,7 @@ St01–St16 step algorithms, GDiv, GMix). Per-layer:
 ## Building locally (optional)
 
     sudo apt-get install -y g++-mingw-w64-x86-64 g++-mingw-w64-i686 wine64
-    make            # both DLLs
-    make test       # Wine smoke-test hosts
-    make enginetest # native DSP unit test
+    make               # all four DLLs (both plugins, x64 + x86)
+    make test          # Wine smoke-test hosts
+    make enginetest    # sampler DSP unit test (native)
+    make librariantest # librarian engine unit test (native)

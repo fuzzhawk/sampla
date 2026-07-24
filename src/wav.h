@@ -128,4 +128,145 @@ static inline WavData wav_load(const char* path)
     return out;
 }
 
+/* ------------------------------------------------------------------------
+ * Additions for the Sample Librarian: header-only probe (cheap filters over
+ * huge libraries), partial decode (analyze the head of a file without
+ * slurping gigabytes), and a 16-bit writer for combo export.
+ * ---------------------------------------------------------------------- */
+
+struct WavInfo {
+    int  frames = 0;
+    int  sampleRate = 44100;
+    int  channels = 0;
+    int  bits = 0;
+    int  fmt = 1;
+    long dataOffset = 0;
+    long dataLen = 0;
+    long fileSize = 0;
+    bool ok = false;
+};
+
+/* Parse only chunk headers — no sample data is read. */
+static inline WavInfo wav_probe(const char* path)
+{
+    WavInfo out;
+    FILE* f = fopen(path, "rb");
+    if (!f) return out;
+    fseek(f, 0, SEEK_END);
+    out.fileSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    unsigned char hdr[12];
+    if (fread(hdr, 1, 12, f) != 12 ||
+        memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4)) {
+        fclose(f); return out;
+    }
+
+    long pos = 12;
+    while (pos + 8 <= out.fileSize) {
+        unsigned char ck[8];
+        fseek(f, pos, SEEK_SET);
+        if (fread(ck, 1, 8, f) != 8) break;
+        uint32_t ckLen = wav_rd32(ck + 4);
+        if (!memcmp(ck, "fmt ", 4) && ckLen >= 16) {
+            unsigned char body[40];
+            size_t want = ckLen < 40 ? ckLen : 40;
+            if (fread(body, 1, want, f) == want) {
+                out.fmt        = wav_rd16(body + 0);
+                out.channels   = wav_rd16(body + 2);
+                out.sampleRate = (int)wav_rd32(body + 4);
+                out.bits       = wav_rd16(body + 14);
+                if (out.fmt == 0xFFFE && want >= 26)
+                    out.fmt = wav_rd16(body + 24);
+            }
+        } else if (!memcmp(ck, "data", 4)) {
+            out.dataOffset = pos + 8;
+            out.dataLen = (long)ckLen;
+            if (out.dataOffset + out.dataLen > out.fileSize)
+                out.dataLen = out.fileSize - out.dataOffset;
+        }
+        pos += 8 + (long)ckLen + (ckLen & 1);
+    }
+    fclose(f);
+
+    if (out.dataOffset > 0 && out.channels >= 1 && out.bits >= 8 &&
+        !(out.bits & 7) && (out.fmt == 1 || out.fmt == 3) &&
+        out.sampleRate > 0) {
+        int frameBytes = (out.bits / 8) * out.channels;
+        out.frames = (int)(out.dataLen / frameBytes);
+        out.ok = out.frames > 0;
+    }
+    return out;
+}
+
+/* Decode only the first maxFrames (0 = everything). Interleaved stereo out. */
+static inline WavData wav_load_partial(const char* path, int maxFrames)
+{
+    WavData out;
+    WavInfo info = wav_probe(path);
+    if (!info.ok) return out;
+
+    int frames = info.frames;
+    if (maxFrames > 0 && frames > maxFrames) frames = maxFrames;
+    int bytesPer = info.bits / 8;
+    int frameBytes = bytesPer * info.channels;
+    size_t need = (size_t)frames * frameBytes;
+    if (need > (size_t)(400L << 20)) return out;     /* sanity cap */
+
+    FILE* f = fopen(path, "rb");
+    if (!f) return out;
+    fseek(f, info.dataOffset, SEEK_SET);
+    std::vector<unsigned char> buf(need);
+    size_t got = fread(buf.data(), 1, need, f);
+    fclose(f);
+    frames = (int)(got / frameBytes);
+    if (frames <= 0) return out;
+
+    out.samples.resize((size_t)frames * 2);
+    for (int i = 0; i < frames; i++) {
+        const unsigned char* fr = buf.data() + (size_t)i * frameBytes;
+        float L = wav_sample(fr, info.fmt, info.bits);
+        float R = (info.channels >= 2) ? wav_sample(fr + bytesPer, info.fmt, info.bits) : L;
+        out.samples[(size_t)i * 2 + 0] = L;
+        out.samples[(size_t)i * 2 + 1] = R;
+    }
+    out.frames = frames;
+    out.sampleRate = info.sampleRate;
+    out.ok = true;
+    return out;
+}
+
+/* Write interleaved stereo float as a 16-bit PCM WAV. */
+static inline bool wav_write16(const char* path, const float* lr, int frames,
+                               int rate)
+{
+    if (frames <= 0) return false;
+    FILE* f = fopen(path, "wb");
+    if (!f) return false;
+    uint32_t dataBytes = (uint32_t)frames * 4;
+    unsigned char h[44];
+    memcpy(h, "RIFF", 4);
+    uint32_t riff = 36 + dataBytes;
+    h[4] = (unsigned char)riff; h[5] = (unsigned char)(riff >> 8);
+    h[6] = (unsigned char)(riff >> 16); h[7] = (unsigned char)(riff >> 24);
+    memcpy(h + 8, "WAVEfmt ", 8);
+    uint32_t f16 = 16; memcpy(h + 16, &f16, 4);
+    uint16_t pcm = 1, ch = 2, blk = 4, bits = 16;
+    memcpy(h + 20, &pcm, 2); memcpy(h + 22, &ch, 2);
+    uint32_t sr = (uint32_t)rate, br = sr * 4;
+    memcpy(h + 24, &sr, 4); memcpy(h + 28, &br, 4);
+    memcpy(h + 32, &blk, 2); memcpy(h + 34, &bits, 2);
+    memcpy(h + 36, "data", 4); memcpy(h + 40, &dataBytes, 4);
+    if (fwrite(h, 1, 44, f) != 44) { fclose(f); return false; }
+
+    for (int i = 0; i < frames * 2; i++) {
+        float x = lr[i];
+        if (x > 1.0f) x = 1.0f; else if (x < -1.0f) x = -1.0f;
+        int16_t s = (int16_t)(x * 32767.0f);
+        fwrite(&s, 2, 1, f);
+    }
+    fclose(f);
+    return true;
+}
+
 #endif /* WAV_MIN_H */
