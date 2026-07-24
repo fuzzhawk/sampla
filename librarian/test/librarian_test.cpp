@@ -283,6 +283,25 @@ int main()
       }
     }
 
+    /* --- neural at real RAVE scale (D=16, hop~2048) if staged --- */
+    { struct stat nb;
+      if (stat("build/nn16/libonnxruntime.so", &nb) == 0) {
+          NeuralEngine nn;
+          if (nn.init("build/nn16") && nn.ready) {
+              std::vector<float> tone(48000);
+              for (int i = 0; i < 48000; i++)
+                  tone[i] = sinf(2 * 3.14159265f * 220 * i / 48000.0f) * 0.7f;
+              std::vector<float> lat; int64_t D = 0, T = 0;
+              CHECK(nn.encode(tone.data(), 48000, lat, D, T) && D == 16,
+                    "neural(real scale): D=16 latent from encoder");
+              std::vector<std::vector<float>> styles = { tone };
+              std::vector<float> g;
+              CHECK(nn.generate(styles, 1.5f, 0.5f, 0.0f, 7, g) && g.size() > 10000,
+                    "neural(real scale): generate at hop~2048");
+          }
+      }
+    }
+
     printf(failures ? "\n%d CHECK(S) FAILED\n" : "\nALL LIBRARIAN CHECKS PASSED\n",
            failures);
     return failures ? 1 : 0;

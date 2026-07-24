@@ -12,9 +12,11 @@ import os
 import numpy as np
 from onnx import helper, TensorProto, save
 
-D = 8          # latent dims
-HOP = 512      # audio samples per latent frame
-K = 1024       # conv kernel
+# Overridable via env so we can also generate RAVE-realistic shapes for tests:
+#   D=16 HOP=2048 python3 tools/make_test_model.py out
+D = int(os.environ.get("D", "8"))       # latent dims
+HOP = int(os.environ.get("HOP", "512")) # audio samples per latent frame
+K = 2 * HOP    # kernel = 2*hop keeps the conv/transpose padding clean at any hop
 
 
 def tensor(name, arr):

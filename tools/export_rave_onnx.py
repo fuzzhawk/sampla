@@ -80,23 +80,42 @@ def main():
     enc = Encoder(model).eval()
     dec = Decoder(model).eval()
 
+    # RAVE checkpoints are TorchScript ScriptModules; a call into a scripted
+    # submodule can't be TRACED, so script the wrappers — then ONNX export uses
+    # the scripted graph directly. Plain nn.Modules fall back to tracing.
+    def scripted(wrapper):
+        try:
+            return torch.jit.script(wrapper)
+        except Exception as e:
+            print(f"  (scripting wrapper failed, will trace: {e})")
+            return wrapper
+
+    enc_s = scripted(enc)
+    dec_s = scripted(dec)
+
     audio = torch.zeros(1, 1, args.frames)
     with torch.no_grad():
-        z = enc(audio)
+        z = enc_s(audio)
     print(f"latent shape from {args.frames} samples: {tuple(z.shape)} "
           f"(hop ~= {args.frames // max(1, z.shape[-1])} samples/frame)")
 
     enc_path = os.path.join(args.outdir, "rave_encoder.onnx")
     dec_path = os.path.join(args.outdir, "rave_decoder.onnx")
 
-    torch.onnx.export(
-        enc, audio, enc_path, opset_version=args.opset,
-        input_names=["audio"], output_names=["latent"],
-        dynamic_axes={"audio": {2: "N"}, "latent": {2: "T"}})
-    torch.onnx.export(
-        dec, z, dec_path, opset_version=args.opset,
-        input_names=["latent"], output_names=["audio"],
-        dynamic_axes={"latent": {2: "T"}, "audio": {2: "N"}})
+    def export(mod, example, path, in_name, out_name):
+        # Force the legacy TorchScript exporter (dynamo=False): most reliable
+        # for RAVE-style conv models, and it needs no onnxscript. Falls back
+        # for older torch that lacks the `dynamo` kwarg.
+        kw = dict(opset_version=args.opset, input_names=[in_name],
+                  output_names=[out_name],
+                  dynamic_axes={in_name: {2: "L"}, out_name: {2: "L2"}})
+        try:
+            torch.onnx.export(mod, example, path, dynamo=False, **kw)
+        except TypeError:
+            torch.onnx.export(mod, example, path, **kw)
+
+    export(enc_s, audio, enc_path, "audio", "latent")
+    export(dec_s, z, dec_path, "latent", "audio")
 
     with open(os.path.join(args.outdir, "rave_sr.txt"), "w") as f:
         f.write(f"{sr}\n")

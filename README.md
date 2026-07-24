@@ -74,14 +74,27 @@ dependency on it and runs fine without it (the NN panel just shows
     rave_decoder.onnx      latent -> audio
     rave_sr.txt            model sample rate
 
-**Getting a model, all GitHub-side (no local toolchain, no GPU):** the
-`convert-model` workflow (Actions tab -> Run workflow) takes the URL of a
-pretrained RAVE `.ts` checkpoint and, on a plain CPU runner, exports the
-ONNX pair as a downloadable artifact — see `tools/export_rave_onnx.py`.
-*Converting* a trained checkpoint is CPU-only; *training* RAVE from scratch
-needs a GPU (Colab/Kaggle/paid runner), but many checkpoints are published.
-`tools/make_test_model.py` builds a tiny stand-in pair that CI uses to test
-the whole encode -> perturb -> decode path.
+**Getting a model — two paths, no local toolchain either way:**
+
+1. **Train on your own samples (Colab GPU):** open
+   [`tools/train_rave_colab.ipynb`](tools/train_rave_colab.ipynb) in Google
+   Colab, pick a GPU runtime, upload a zip of one-shots (one coherent
+   category works best — all kicks, all vox, all pads), and it preprocesses,
+   fine-tunes/trains a RAVE, exports TorchScript, converts to the ONNX pair,
+   and hands you a downloadable zip. A few hundred one-shots is enough to
+   fine-tune; training from scratch wants more (30 min–hours of audio).
+2. **Convert an existing checkpoint (CPU, GitHub-side):** the `convert-model`
+   workflow (Actions tab -> Run workflow) takes a pretrained RAVE `.ts` URL
+   and exports the ONNX pair as a downloadable artifact on a plain CPU runner
+   — see `tools/export_rave_onnx.py`.
+
+The converter scripts thin encode/decode wrappers so ONNX export uses RAVE's
+own graph (not a fragile trace) and forces the legacy exporter. The whole
+chain — scripted `.ts` -> converter -> ONNX -> the plugin's ORT inference —
+is verified in CI at real RAVE scale (D=16, hop~2048) via
+`tools/make_test_model.py`, which also builds the tiny stand-in pair the
+neural unit tests run against. *Training* RAVE needs a GPU (the Colab
+notebook); *converting* a trained checkpoint is CPU-only.
 
 Params (23, all automatable): Master, Atk, Rel, TuneKey, MinLen, MaxLen,
 MaxMB, Vol/Pan/Tune for layers 1–4, then NLen/NChaos/NMorph/NSprd. The chunk

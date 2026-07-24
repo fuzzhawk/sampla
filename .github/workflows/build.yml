@@ -30,11 +30,13 @@ jobs:
         run: |
           pip install --quiet onnx numpy
           python3 tools/make_test_model.py build/nn
+          D=16 HOP=2048 python3 tools/make_test_model.py build/nn16
           ORT=onnxruntime-linux-x64-1.17.3
           curl -sSL -o ort.tgz \
             "https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/$ORT.tgz"
           tar xzf ort.tgz
           cp "$ORT"/lib/libonnxruntime.so.1.17.3 build/nn/libonnxruntime.so
+          cp "$ORT"/lib/libonnxruntime.so.1.17.3 build/nn16/libonnxruntime.so
 
       - name: Librarian unit test (native, incl. neural)
         run: make librariantest
