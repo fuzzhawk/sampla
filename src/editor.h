@@ -5,10 +5,13 @@
  * defined, so it can call straight into them. Everything here is Windows-only
  * (the DSP in engine.h stays platform-neutral for the CI smoke test).
  *
- * Layout: three stacked lanes. Each lane has a waveform view (with loop region,
- * draggable loop handles, and a live playhead), a clickable Mode and Play
- * button, and a panel of knobs (Vol, Tune, Overlap, ADSR, Grain size/density).
- * Drop a .wav on a lane — or double-click its waveform — to load a sample.
+ * Layout: three stacked lanes. Each lane has a waveform view (loop region, the
+ * crossfade/overlap bands shaded amber, draggable loop handles, and a live
+ * playhead), Mode and Play buttons, and a panel of 19 knobs — the core sampler
+ * controls plus the experimental granular set (Spray, PJit, Pan, Rev, Scan,
+ * Shape, Bits, Deci, Chaos, TJit). A global chaos SEED (.txt) sits in the top
+ * bar. Drop a .wav on a lane to load a sample; drop a .txt anywhere (or
+ * double-click the SEED box) to load the chaos seed.
  */
 #ifndef EDITOR_H
 #define EDITOR_H
@@ -22,22 +25,28 @@
 /* VST wants a rect with 16-bit fields. */
 struct ERect { int16_t top, left, bottom, right; };
 
-static const int ED_W = 760;
-static const int ED_H = 540;
-static const int LANE_TOP = 30;
-static const int LANE_H   = 170;
-static const int WAVE_X   = 14;
-static const int WAVE_X2  = 474;
-static const int PANEL_X  = 484;
-static const int KNOB_R   = 18;
+static const int ED_W = 980;
+static const int ED_H = 560;
+static const int LANE_TOP = 34;
+static const int LANE_H   = 174;
+static const int WAVE_X   = 12;
+static const int WAVE_X2  = 556;
+static const int KNOB_R   = 13;
+static const int KCOL0    = 586;   /* first knob column center */
+static const int KCOLW    = 40;    /* column spacing            */
 
-/* the 9 knobs shown per lane, in grid order (5 cols x 2 rows) */
-static const int   kKnobOff[9] = {
+/* the 19 knobs shown per lane (everything except Mode/Play buttons and the
+ * two loop handles, which live in the waveform) */
+static const int NKNOBS = 19;
+static const int kKnobOff[NKNOBS] = {
     oVolume, oTune, oOverlap, oAttack, oDecay, oSustain, oRelease,
-    oGrainSize, oDensity
+    oGrainSize, oDensity, oSpray, oPitchJit, oPanSpread, oRevProb,
+    oScan, oShape, oBits, oDeci, oChaos, oTimeJit
 };
-static const char* kKnobLbl[9] = {
-    "Vol", "Tune", "Ovlp", "Atk", "Dec", "Sus", "Rel", "Grain", "Dens"
+static const char* kKnobLbl[NKNOBS] = {
+    "Vol", "Tune", "Ovlp", "Atk", "Dec", "Sus", "Rel", "Grain", "Dens",
+    "Spray", "PJit", "Pan", "Rev", "Scan", "Shape", "Bits", "Deci",
+    "Chaos", "TJit"
 };
 
 static ERect     g_rect = { 0, 0, (int16_t)ED_H, (int16_t)ED_W };
@@ -58,23 +67,27 @@ static inline int laneTopY(int l)              { return LANE_TOP + l * LANE_H; }
 static inline void waveRect(int l, RECT* r)
 {
     r->left = WAVE_X; r->right = WAVE_X2;
-    r->top = laneTopY(l) + 24; r->bottom = laneTopY(l) + 150;
+    r->top = laneTopY(l) + 22; r->bottom = laneTopY(l) + 150;
 }
 static inline void knobCenter(int l, int k, int* cx, int* cy)
 {
-    int col = k % 5, row = k / 5;
-    *cx = PANEL_X + 26 + col * 54;
-    *cy = laneTopY(l) + 34 + row * 74;
+    int col = k % 10, row = k / 10;
+    *cx = KCOL0 + col * KCOLW;
+    *cy = laneTopY(l) + 52 + row * 66;
 }
 static inline void modeBtnRect(int l, RECT* r)
 {
     r->left = 300; r->right = 372;
-    r->top = laneTopY(l) + 4; r->bottom = laneTopY(l) + 21;
+    r->top = laneTopY(l) + 3; r->bottom = laneTopY(l) + 20;
 }
 static inline void playBtnRect(int l, RECT* r)
 {
-    r->left = 380; r->right = 452;
-    r->top = laneTopY(l) + 4; r->bottom = laneTopY(l) + 21;
+    r->left = 380; r->right = 470;
+    r->top = laneTopY(l) + 3; r->bottom = laneTopY(l) + 20;
+}
+static inline void seedBtnRect(RECT* r)
+{
+    r->left = 640; r->right = 968; r->top = 6; r->bottom = 25;
 }
 static inline bool inRect(const RECT& r, int x, int y)
 {
@@ -102,21 +115,22 @@ static void drawKnob(HDC dc, int cx, int cy, float val, const char* label,
     DeleteObject(kb); DeleteObject(rim); DeleteObject(ind);
 
     SetTextColor(dc, RGB(150, 156, 170));
-    RECT tl = { cx - 27, cy - KNOB_R - 15, cx + 27, cy - KNOB_R - 1 };
+    RECT tl = { cx - 22, cy - KNOB_R - 14, cx + 22, cy - KNOB_R - 1 };
     DrawTextA(dc, label, -1, &tl, DT_CENTER | DT_SINGLELINE);
     SetTextColor(dc, RGB(205, 210, 222));
-    RECT vl = { cx - 27, cy + KNOB_R + 1, cx + 27, cy + KNOB_R + 15 };
+    RECT vl = { cx - 22, cy + KNOB_R + 1, cx + 22, cy + KNOB_R + 14 };
     DrawTextA(dc, value, -1, &vl, DT_CENTER | DT_SINGLELINE);
 }
 
 static void drawLane(HDC dc, Plugin* p, int l)
 {
     int top = laneTopY(l);
+    int base0 = 1 + l * PPL;
 
     /* header: layer tag + filename */
     SetTextColor(dc, RGB(120, 200, 250));
     char tag[8]; snprintf(tag, sizeof(tag), "L%d", l + 1);
-    TextOutA(dc, WAVE_X, top + 4, tag, (int)strlen(tag));
+    TextOutA(dc, WAVE_X, top + 3, tag, (int)strlen(tag));
 
     Sample* s = p->engine.layers[l].live.load();
     SetTextColor(dc, RGB(190, 196, 208));
@@ -130,10 +144,9 @@ static void drawLane(HDC dc, Plugin* p, int l)
                  base.c_str(), s->frames / (float)s->srcRate, s->srcRate);
         base = info; fname = base.c_str();
     }
-    TextOutA(dc, WAVE_X + 34, top + 4, fname, (int)strlen(fname));
+    TextOutA(dc, WAVE_X + 30, top + 3, fname, (int)strlen(fname));
 
     /* mode + play buttons */
-    int base0 = 1 + l * PPL;
     int mode = (int)layerReal(oMode, p->params[base0 + oMode]);
     bool play = layerReal(oPlay, p->params[base0 + oPlay]) >= 0.5f;
     RECT mr, pr; modeBtnRect(l, &mr); playBtnRect(l, &pr);
@@ -153,7 +166,7 @@ static void drawLane(HDC dc, Plugin* p, int l)
     int mid = (wr.top + wr.bottom) / 2;
     int halfH = (wr.bottom - wr.top) / 2 - 2;
 
-    /* loop region shading + handles */
+    /* loop region shading */
     float ls = p->params[base0 + oLoopStart];
     float le = p->params[base0 + oLoopEnd];
     int lx = wr.left + (int)(ls * waveW);
@@ -161,6 +174,22 @@ static void drawLane(HDC dc, Plugin* p, int l)
     RECT loopR = { lx, wr.top, ex, wr.bottom };
     HBRUSH lb = CreateSolidBrush(RGB(30, 44, 70));
     FillRect(dc, &loopR, lb); DeleteObject(lb);
+
+    /* crossfade / overlap bands (amber), drawn under the waveform */
+    if (s && s->frames > 1 && mode == LOOP_FORWARD) {
+        float ovMs = layerReal(oOverlap, p->params[base0 + oOverlap]);
+        double xf = ovMs * 0.001 * s->srcRate / s->frames;   /* as fraction   */
+        double loopLen = (double)le - ls;
+        if (xf > loopLen * 0.5) xf = loopLen * 0.5;
+        if (xf > 0) {
+            int w = (int)(xf * waveW);
+            HBRUSH ab = CreateSolidBrush(RGB(120, 92, 40));
+            RECT b1 = { ex - w, wr.top, ex, wr.bottom };       /* fade out  */
+            RECT b2 = { lx, wr.top, lx + w, wr.bottom };       /* fade in   */
+            FillRect(dc, &b1, ab); FillRect(dc, &b2, ab);
+            DeleteObject(ab);
+        }
+    }
 
     /* waveform peaks */
     if (s && s->frames > 1) {
@@ -195,7 +224,7 @@ static void drawLane(HDC dc, Plugin* p, int l)
     }
 
     /* knobs */
-    for (int k = 0; k < 9; k++) {
+    for (int k = 0; k < NKNOBS; k++) {
         int cx, cy; knobCenter(l, k, &cx, &cy);
         int idx = base0 + kKnobOff[k];
         char val[16]; paramDisplay(p, idx, val);
@@ -219,10 +248,23 @@ static void paintEditor(HWND hwnd, Plugin* p)
     FillRect(dc, &full, bg); DeleteObject(bg);
 
     SetTextColor(dc, RGB(230, 234, 244));
-    TextOutA(dc, WAVE_X, 8, "GRANULAR SAMPLER", 16);
+    TextOutA(dc, WAVE_X, 7, "GRANULAR SAMPLER", 16);
     SetTextColor(dc, RGB(140, 146, 160));
-    const char* hint = "drag knobs vertically · drag loop edges · double-click wave to load";
-    TextOutA(dc, 250, 10, hint, (int)strlen(hint));
+    const char* hint = "drag knobs vertically · drag loop edges · dbl-click wave = load";
+    TextOutA(dc, 170, 9, hint, (int)strlen(hint));
+
+    /* chaos seed box */
+    RECT sr; seedBtnRect(&sr);
+    HBRUSH sb = CreateSolidBrush(RGB(52, 40, 30));
+    FillRect(dc, &sr, sb); DeleteObject(sb);
+    std::string sn = p->seedName();
+    char seedLine[200];
+    if (sn.empty())
+        snprintf(seedLine, sizeof(seedLine), "CHAOS SEED: (drop a .txt or double-click)");
+    else
+        snprintf(seedLine, sizeof(seedLine), "CHAOS SEED: %s", sn.c_str());
+    SetTextColor(dc, RGB(224, 180, 120));
+    DrawTextA(dc, seedLine, -1, &sr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     for (int l = 0; l < NUM_LAYERS; l++) drawLane(dc, p, l);
 
@@ -233,7 +275,17 @@ static void paintEditor(HWND hwnd, Plugin* p)
 
 /* ---- interaction ---- */
 
-static void loadDialog(EditorState* st, int lane)
+static bool endsWithTxt(const char* path)
+{
+    size_t n = strlen(path);
+    return n >= 4 &&
+        (path[n-4] == '.') &&
+        (path[n-3] == 't' || path[n-3] == 'T') &&
+        (path[n-2] == 'x' || path[n-2] == 'X') &&
+        (path[n-1] == 't' || path[n-1] == 'T');
+}
+
+static void loadSampleDialog(EditorState* st, int lane)
 {
     char file[MAX_PATH] = { 0 };
     OPENFILENAMEA ofn; memset(&ofn, 0, sizeof(ofn));
@@ -243,8 +295,20 @@ static void loadDialog(EditorState* st, int lane)
     ofn.lpstrFile = file;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (GetOpenFileNameA(&ofn))
-        st->p->loadLayer(lane, file);
+    if (GetOpenFileNameA(&ofn)) st->p->loadLayer(lane, file);
+}
+
+static void loadSeedDialog(EditorState* st)
+{
+    char file[MAX_PATH] = { 0 };
+    OPENFILENAMEA ofn; memset(&ofn, 0, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = st->hwnd;
+    ofn.lpstrFilter = "Text seed\0*.txt\0All files\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameA(&ofn)) st->p->loadSeed(file);
 }
 
 static int laneAt(int y)
@@ -276,7 +340,7 @@ static void onLDown(EditorState* st, int x, int y)
 
     /* loop handles (grab within 6px of either edge, inside the wave rect) */
     RECT wr; waveRect(l, &wr);
-    if (y >= wr.top && y < wr.bottom) {
+    if (y >= wr.top && y < wr.bottom && x >= wr.left - 6 && x <= wr.right + 6) {
         int waveW = wr.right - wr.left;
         int lx = wr.left + (int)(p->params[base0 + oLoopStart] * waveW);
         int ex = wr.left + (int)(p->params[base0 + oLoopEnd] * waveW);
@@ -285,7 +349,7 @@ static void onLDown(EditorState* st, int x, int y)
     }
 
     /* knobs */
-    for (int k = 0; k < 9; k++) {
+    for (int k = 0; k < NKNOBS; k++) {
         int cx, cy; knobCenter(l, k, &cx, &cy);
         if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= (KNOB_R + 4) * (KNOB_R + 4)) {
             st->dragKind = 1;
@@ -338,7 +402,7 @@ static LRESULT CALLBACK EditorProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_ERASEBKGND:
         return 1;   /* handled in WM_PAINT */
     case WM_LBUTTONDOWN:
-        if (st) { SetCapture(hwnd); onLDown(st, LOWORD(lp), HIWORD(lp)); }
+        if (st) { SetCapture(hwnd); onLDown(st, (short)LOWORD(lp), (short)HIWORD(lp)); }
         return 0;
     case WM_MOUSEMOVE:
         if (st) onMove(st, (short)LOWORD(lp), (short)HIWORD(lp));
@@ -349,19 +413,27 @@ static LRESULT CALLBACK EditorProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_LBUTTONDBLCLK:
         if (st) {
-            int y = HIWORD(lp), l = laneAt(y);
-            RECT wr; if (l >= 0) { waveRect(l, &wr);
-                if (inRect(wr, (short)LOWORD(lp), y)) loadDialog(st, l); }
+            int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
+            RECT sr; seedBtnRect(&sr);
+            if (inRect(sr, x, y)) { loadSeedDialog(st); return 0; }
+            int l = laneAt(y);
+            RECT wr;
+            if (l >= 0) { waveRect(l, &wr); if (inRect(wr, x, y)) loadSampleDialog(st, l); }
         }
         return 0;
     case WM_DROPFILES: {
         if (st) {
             HDROP h = (HDROP)wp;
             POINT pt; DragQueryPoint(h, &pt);
-            int l = laneAt(pt.y);
             char file[MAX_PATH];
-            if (l >= 0 && DragQueryFileA(h, 0, file, MAX_PATH))
-                st->p->loadLayer(l, file);
+            if (DragQueryFileA(h, 0, file, MAX_PATH)) {
+                if (endsWithTxt(file)) {
+                    st->p->loadSeed(file);              /* seed is global */
+                } else {
+                    int l = laneAt(pt.y);
+                    if (l >= 0) st->p->loadLayer(l, file);
+                }
+            }
             DragFinish(h);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
@@ -424,7 +496,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 #else  /* !_WIN32 — headless build: editor is a no-op so DSP still compiles */
 
 struct ERect { int16_t top, left, bottom, right; };
-static ERect g_rect = { 0, 0, 540, 760 };
+static ERect g_rect = { 0, 0, 560, 980 };
 static ERect* editorRect() { return &g_rect; }
 static bool editorOpen(Plugin*, void*) { return false; }
 static void editorClose(Plugin*) {}

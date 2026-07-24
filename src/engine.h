@@ -31,6 +31,14 @@ static const float ENG_TWO_PI = 6.28318530717958647692f;
 
 enum LoopMode { LOOP_ONESHOT = 0, LOOP_FORWARD = 1, LOOP_GRANULAR = 2, LOOP_MODE_COUNT = 3 };
 
+/* Chaos seed: bytes of a user-supplied .txt file drive the deterministic
+ * bit-rearranging glitch. Handed GUI -> audio via the same retire pattern. */
+struct SeedData {
+    std::vector<uint8_t> bytes;
+    std::string path;
+    uint32_t hash = 0x811C9DC5u;   /* FNV-1a of the bytes */
+};
+
 /* One decoded sample plus a precomputed peak envelope for the waveform view. */
 struct Sample {
     std::vector<float> data;      /* interleaved stereo */
@@ -75,6 +83,19 @@ struct LayerParams {
     float attackMs = 5.0f, decayMs = 200.0f, sustain = 0.8f, releaseMs = 300.0f;
     float grainMs  = 60.0f; /* granular grain length               */
     float density  = 20.0f; /* grains per second                   */
+
+    /* ---- experimental granular controls (milestone 3) ---- */
+    float sprayMs   = 0.0f; /* random grain start scatter, ms       */
+    float pitchJit  = 0.0f; /* per-grain random detune, semitones   */
+    float panSpread = 0.0f; /* per-grain stereo scatter, 0..1       */
+    float revProb   = 0.0f; /* probability a grain plays reversed   */
+    float scan      = 0.0f; /* grain-source drift through region -1..1 */
+    float shape     = 0.5f; /* grain window skew, 0..1 (0.5 = Hann) */
+    /* ---- chaos manglers, applied to the whole layer output ---- */
+    float bits      = 16.0f;/* bit depth 1..16 (16 = clean)         */
+    float decimate  = 1.0f; /* sample-and-hold factor 1..50         */
+    float chaos     = 0.0f; /* seed-driven bit rearrange 0..1       */
+    float timeJit   = 0.0f; /* grain spawn-time jitter 0..1         */
 };
 
 /* ADSR stages */
@@ -83,9 +104,12 @@ enum { ENV_IDLE = 0, ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE };
 struct Grain {
     bool   active = false;
     double pos = 0;         /* read position in source frames      */
-    double inc = 1;         /* per-sample advance                  */
+    double inc = 1;         /* per-sample advance (may be negative)*/
     int    age = 0;         /* samples elapsed                     */
     int    len = 1;         /* total grain length in samples       */
+    float  panL = 1.0f;     /* equal-power pan gains               */
+    float  panR = 1.0f;
+    float  shape = 0.5f;    /* window skew captured at spawn       */
 };
 
 struct Layer {
@@ -99,9 +123,15 @@ struct Layer {
     bool   inLoop = false;  /* has the head pass reached the loop  */
     int    stage = ENV_IDLE;
     float  env = 0.0f;
-    Grain  grains[48];
+    Grain  grains[64];
     double grainAccum = 0;  /* fractional grains owed              */
+    double scanPhase = 0;   /* granular scan position 0..1         */
     uint32_t rng = 0x1234567u;
+
+    /* mangler state (decimate sample-and-hold + chaos index) */
+    float  holdL = 0, holdR = 0;
+    int    holdCnt = 0;
+    uint32_t chaosIdx = 0;
 
     std::atomic<float> playhead{0.0f};    /* 0..1 for the GUI              */
 
@@ -134,7 +164,7 @@ struct Layer {
     /* playback position only (envelope untouched) */
     void resetPlayback()
     {
-        pos = 0; inLoop = false; grainAccum = 0;
+        pos = 0; inLoop = false; grainAccum = 0; scanPhase = 0; holdCnt = 0;
         for (Grain& g : grains) g.active = false;
     }
 
@@ -158,6 +188,11 @@ public:
     bool gate = false;
     int  rootNote = 60;    /* C4 plays the sample at native pitch/rate */
 
+    /* global chaos seed (shared by all layers) */
+    std::atomic<SeedData*> seedLive{nullptr};
+    std::atomic<SeedData*> seedPending{nullptr};
+    SeedData* seedRetire = nullptr;
+
     ~Engine()
     {
         for (Layer& L : layers) {
@@ -165,6 +200,18 @@ public:
             delete L.pending.exchange(nullptr);
             delete L.retire;
         }
+        delete seedLive.exchange(nullptr);
+        delete seedPending.exchange(nullptr);
+        delete seedRetire;
+    }
+
+    /* GUI thread: publish a new chaos seed */
+    void publishSeed(SeedData* s) { delete seedPending.exchange(s); }
+    /* audio thread: adopt at block start */
+    void adoptSeed()
+    {
+        SeedData* s = seedPending.exchange(nullptr);
+        if (s) { delete seedRetire; seedRetire = seedLive.exchange(s); }
     }
 
     void setSampleRate(float sr) { sampleRate = sr > 0 ? sr : 44100.0f; }
@@ -175,10 +222,12 @@ public:
     /* Render sampleFrames of all active layers, summed into outL/outR. */
     void process(float** outLR, int frames, const LayerParams lp[NLAYERS])
     {
+        adoptSeed();
+        SeedData* seed = seedLive.load();
         float* outL = outLR[0];
         float* outR = outLR[1];
         for (int i = 0; i < NLAYERS; i++)
-            renderLayer(layers[i], lp[i], outL, outR, frames);
+            renderLayer(layers[i], lp[i], outL, outR, frames, seed);
     }
 
 private:
@@ -199,7 +248,7 @@ private:
     }
 
     void renderLayer(Layer& L, const LayerParams& lp, float* outL, float* outR,
-                     int frames)
+                     int frames, SeedData* seed)
     {
         L.adopt();
         Sample* s = L.live.load();
@@ -215,7 +264,7 @@ private:
         if (le > s->frames) le = s->frames;
         double loopLen = le - ls;
         double overlap = (double)lp.overlapMs * 0.001 * s->srcRate;
-        if (overlap > loopLen * 0.5) overlap = loopLen * 0.5;
+        if (overlap > loopLen * 0.5) overlap = loopLen * 0.5;   /* keep a clean core */
         if (overlap < 0) overlap = 0;
 
         float attStep = 1.0f / fmaxf(1.0f, lp.attackMs  * 0.001f * sampleRate);
@@ -224,6 +273,7 @@ private:
 
         float grainLenF = fmaxf(1.0f, lp.grainMs * 0.001f * s->srcRate);
         double spawnPerSample = (double)lp.density / sampleRate;
+        double scanStep = (double)lp.scan * 2.0 / sampleRate;   /* up to 2 sweeps/s */
 
         for (int i = 0; i < frames; i++) {
             /* ---- amplitude ADSR ---- */
@@ -235,10 +285,12 @@ private:
 
             if (lp.mode == LOOP_GRANULAR) {
                 renderGranular(L, lp, s, ls, le, pitchInc, grainLenF,
-                               spawnPerSample, sl, sr);
+                               spawnPerSample, scanStep, sl, sr);
             } else {
                 renderSample(L, lp, s, ls, le, overlap, pitchInc, sl, sr);
             }
+
+            mangle(L, lp, seed, sl, sr);    /* decimate -> bitcrush -> chaos */
 
             outL[i] += sl * amp;
             outR[i] += sr * amp;
@@ -246,9 +298,56 @@ private:
 
         /* report a playhead position for the GUI */
         double ph = (lp.mode == LOOP_GRANULAR)
-                    ? (L.inLoop ? (ls + 0.5 * loopLen) : L.pos)
+                    ? (ls + L.scanPhase * loopLen)
                     : L.pos;
         L.playhead.store((float)(ph / s->frames));
+    }
+
+    /* ---- output manglers: sample-rate reduction, bit crush, chaos ---- */
+    void mangle(Layer& L, const LayerParams& lp, SeedData* seed,
+                float& sl, float& sr)
+    {
+        if (lp.decimate > 1.0f) {
+            if (L.holdCnt <= 0) { L.holdL = sl; L.holdR = sr; L.holdCnt = (int)lp.decimate; }
+            sl = L.holdL; sr = L.holdR; L.holdCnt--;
+        }
+        if (lp.bits < 15.99f) {
+            float levels = powf(2.0f, lp.bits);
+            float step = 2.0f / levels;
+            sl = floorf(sl / step + 0.5f) * step;
+            sr = floorf(sr / step + 0.5f) * step;
+        }
+        if (lp.chaos > 0.001f) {
+            sl = bitMangle(sl, seedValue(seed, L.chaosIdx++), lp.chaos);
+            sr = bitMangle(sr, seedValue(seed, L.chaosIdx++), lp.chaos);
+        }
+    }
+
+    /* Pull a pseudo-random 32-bit value from the seed stream at position idx.
+     * With a loaded .txt the file's bytes steer the sequence; without one a
+     * built-in constant keeps chaos usable. Deterministic either way. */
+    static inline uint32_t seedValue(SeedData* seed, uint32_t idx)
+    {
+        uint32_t base = 0x9E3779B9u;
+        if (seed && !seed->bytes.empty())
+            base = seed->hash ^ (uint32_t)seed->bytes[idx % seed->bytes.size()];
+        uint32_t v = base ^ (idx * 2246822519u);
+        v ^= v << 13; v ^= v >> 17; v ^= v << 5;
+        return v;
+    }
+
+    /* Rotate + partially XOR the 16-bit word of a sample: "chaotic bit
+     * re-arranging." amt crossfades clean -> mangled so it stays playable. */
+    static inline float bitMangle(float x, uint32_t sv, float amt)
+    {
+        if (x > 1.0f) x = 1.0f; else if (x < -1.0f) x = -1.0f;
+        uint16_t u = (uint16_t)(int16_t)lrintf(x * 32767.0f);
+        int rot = sv & 15;
+        uint16_t r = (uint16_t)((u << rot) | (u >> ((16 - rot) & 15)));
+        uint16_t mask = (uint16_t)((sv >> 8) & (uint16_t)(0xFFFF * amt));
+        r ^= mask;
+        float mangled = (int16_t)r / 32767.0f;
+        return x * (1.0f - amt) + mangled * amt;
     }
 
     void advanceEnv(Layer& L, const LayerParams& lp,
@@ -275,33 +374,39 @@ private:
             L.stage = ENV_RELEASE;
     }
 
-    /* OneShot / Forward playback with crossfaded loop. */
+    /* OneShot / Forward playback with a seamless equal-power crossfade loop.
+     *
+     * A single read pointer runs ls..le. Within `overlap` frames of le it
+     * crossfades (cos/sin, constant power) with a second read starting at ls,
+     * then wraps to ls+overlap — the exact frame the fade left off. The head
+     * pass (playFromStart) flows through the same fade into the loop, so there
+     * is no hard jump at the seam and no click when the overlap is large. */
     void renderSample(Layer& L, const LayerParams& lp, Sample* s,
                       double ls, double le, double overlap,
                       double inc, float& outL, float& outR)
     {
-        if (!L.inLoop) {
-            /* head pass: from 0 (playFromStart) or straight into loopStart */
-            if (!lp.playFromStart && L.pos < ls) L.pos = ls;
-            readFrame(s, L.pos, outL, outR);
+        if (!L.inLoop) {                       /* first sample: seed position */
+            L.pos = lp.playFromStart ? 0.0 : ls;
+            L.inLoop = true;
+        }
+
+        float aL, aR; readFrame(s, L.pos, aL, aR);
+
+        if (lp.mode == LOOP_ONESHOT) {
+            outL = aL; outR = aR;
             L.pos += inc;
-            if (lp.mode == LOOP_ONESHOT) {
-                if (L.pos >= s->frames - 1) { L.pos = s->frames - 1; L.stage = ENV_RELEASE; }
-                return;
-            }
-            if (L.pos >= le) { L.pos = ls + overlap; L.inLoop = true; }
+            if (L.pos >= s->frames - 1) { L.pos = s->frames - 1; L.stage = ENV_RELEASE; }
             return;
         }
 
-        /* looping between ls..le with a crossfade near le */
-        float aL, aR; readFrame(s, L.pos, aL, aR);
-        double distToEnd = le - L.pos;
-        if (overlap > 0 && distToEnd < overlap) {
-            float t = (float)(1.0 - distToEnd / overlap);   /* 0..1 into fade */
-            double posB = ls + (overlap - distToEnd);
+        double dEnd = le - L.pos;
+        if (overlap > 0 && dEnd < overlap && L.pos >= ls) {
+            float t = (float)(1.0 - dEnd / overlap);       /* 0..1 into fade */
+            double posB = ls + (overlap - dEnd);
             float bL, bR; readFrame(s, posB, bL, bR);
-            outL = aL * (1.0f - t) + bL * t;
-            outR = aR * (1.0f - t) + bR * t;
+            float ga = cosf(t * 1.57079633f), gb = sinf(t * 1.57079633f);
+            outL = aL * ga + bL * gb;
+            outR = aR * ga + bR * gb;
         } else {
             outL = aL; outR = aR;
         }
@@ -309,29 +414,34 @@ private:
         if (L.pos >= le) L.pos = ls + overlap + (L.pos - le);
     }
 
-    /* Granular cloud over [ls,le]. Head pass (playFromStart) plays normally
-     * until it reaches loopStart, then hands over to the grain cloud. */
+    /* Granular cloud over [ls,le] with the experimental controls: a scanning
+     * source position, per-grain spray / detune / reverse / pan, a skewable
+     * window, and spawn-time jitter. Head pass (playFromStart) plays normally
+     * until loopStart, then hands over to the cloud. */
     void renderGranular(Layer& L, const LayerParams& lp, Sample* s,
                         double ls, double le, double inc, float grainLenF,
-                        double spawnPerSample, float& outL, float& outR)
+                        double spawnPerSample, double scanStep,
+                        float& outL, float& outR)
     {
         if (!L.inLoop) {
-            double head = lp.playFromStart ? 0.0 : ls;
-            if (L.pos < head) L.pos = head;
             if (lp.playFromStart && L.pos < ls) {
                 readFrame(s, L.pos, outL, outR);
                 L.pos += inc;
                 if (L.pos >= ls) { L.pos = ls; L.inLoop = true; }
                 return;
             }
-            L.pos = ls; L.inLoop = true;
+            L.inLoop = true; L.scanPhase = 0;
         }
 
-        /* spawn grains at density */
+        L.scanPhase += scanStep;
+        if (L.scanPhase >= 1.0) L.scanPhase -= 1.0;
+        else if (L.scanPhase < 0.0) L.scanPhase += 1.0;
+
         L.grainAccum += spawnPerSample;
         while (L.grainAccum >= 1.0) {
-            L.grainAccum -= 1.0;
-            spawnGrain(L, ls, le, inc, grainLenF);
+            double jit = 1.0 + (L.randf() * 2.0f - 1.0f) * lp.timeJit * 0.9;
+            L.grainAccum -= jit > 0.1 ? jit : 0.1;
+            spawnGrain(L, lp, s, ls, le, inc, grainLenF);
         }
 
         float mixL = 0, mixR = 0;
@@ -339,42 +449,66 @@ private:
             if (!g.active) continue;
             float w = grainWindow(g);
             float gl, gr; readFrame(s, g.pos, gl, gr);
-            mixL += gl * w; mixR += gr * w;
+            mixL += gl * w * g.panL; mixR += gr * w * g.panR;
             g.pos += g.inc;
-            if (++g.age >= g.len || g.pos >= s->frames - 1) g.active = false;
+            if (++g.age >= g.len || g.pos < 0.0 || g.pos >= s->frames - 1)
+                g.active = false;
         }
         outL = mixL; outR = mixR;
     }
 
-    void spawnGrain(Layer& L, double ls, double le,
-                    double inc, float grainLenF)
+    void spawnGrain(Layer& L, const LayerParams& lp, Sample* s,
+                    double ls, double le, double inc, float grainLenF)
     {
         for (Grain& g : L.grains) {
             if (g.active) continue;
-            double span = (le - ls) - grainLenF * inc;
-            if (span < 1) span = 1;
-            g.pos = ls + L.randf() * span;
-            g.inc = inc;
-            g.age = 0;
-            g.len = (int)grainLenF;
-            g.active = true;
+            double region = le - ls; if (region < 1) region = 1;
+            double center = ls + L.scanPhase * region;
+            double spray  = (L.randf() * 2.0f - 1.0f) * lp.sprayMs * 0.001 * s->srcRate;
+            double gpos = center + spray;
+            while (gpos < ls)  gpos += region;
+            while (gpos >= le) gpos -= region;
+
+            double detune = (L.randf() * 2.0f - 1.0f) * lp.pitchJit;
+            double ginc = inc * pow(2.0, detune / 12.0);
+            int len = (int)grainLenF; if (len < 1) len = 1;
+            if (L.randf() < lp.revProb) {                 /* reverse grain */
+                ginc = -ginc;
+                gpos += (double)len * fabs(ginc);
+                if (gpos >= le) gpos = le - 1;
+            }
+            float pan = 0.5f + (L.randf() - 0.5f) * lp.panSpread;
+            if (pan < 0) pan = 0;
+            if (pan > 1) pan = 1;
+
+            g.pos = gpos; g.inc = ginc; g.age = 0; g.len = len; g.active = true;
+            g.panL = fminf(1.0f, 2.0f * (1.0f - pan));    /* center = unity */
+            g.panR = fminf(1.0f, 2.0f * pan);
+            g.shape = lp.shape;
             return;
         }
     }
 
+    /* Skewable grain window: `shape` moves the peak (0.5 = symmetric Hann,
+     * <0.5 fast-attack/long-tail, >0.5 slow-attack). */
     static inline float grainWindow(const Grain& g)
     {
         float x = (g.len > 1) ? (float)g.age / (float)(g.len - 1) : 0.0f;
-        return 0.5f * (1.0f - cosf(ENG_TWO_PI * x));   /* Hann */
+        float pk = g.shape; if (pk < 0.03f) pk = 0.03f; if (pk > 0.97f) pk = 0.97f;
+        if (x < pk) return 0.5f * (1.0f - cosf(3.14159265f * x / pk));
+        return 0.5f * (1.0f - cosf(3.14159265f * (1.0f - (x - pk) / (1.0f - pk))));
     }
 };
 
-/* Trigger this layer's envelope + playback from the top of the sample. */
+/* Trigger this layer's envelope + playback from the top of the sample. The
+ * chaos index resets so a given seed + note reproduces the same glitch; the
+ * grain RNG keeps running so the granular texture stays organic across hits. */
 inline void Layer::retrigger()
 {
     resetVoice();
     stage = ENV_ATTACK;
     env = 0.0f;
+    chaosIdx = 0;
 }
 
 #endif /* ENGINE_H */

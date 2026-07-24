@@ -24,7 +24,7 @@
 
 #define PLUGIN_NAME    "Granular Sampler"
 #define PLUGIN_VENDOR  "Morningcloak"
-#define PLUGIN_VERSION 2000            /* 2.0.0.0 */
+#define PLUGIN_VERSION 3000            /* 3.0.0.0 */
 #define PLUGIN_UNIQUE_ID 0x4D436753    /* 'MCgS' */
 
 /* ------------------------------------------------------------ param layout
@@ -33,7 +33,11 @@
  */
 enum LayerOff {
     oVolume = 0, oTune, oMode, oPlay, oLoopStart, oLoopEnd, oOverlap,
-    oAttack, oDecay, oSustain, oRelease, oGrainSize, oDensity, PPL /* =13 */
+    oAttack, oDecay, oSustain, oRelease, oGrainSize, oDensity,
+    /* experimental granular (milestone 3) */
+    oSpray, oPitchJit, oPanSpread, oRevProb, oScan, oShape,
+    oBits, oDeci, oChaos, oTimeJit,
+    PPL /* = 23 */
 };
 static const int NUM_LAYERS = Engine::NLAYERS;
 static const int NUM_PARAMS = 1 + NUM_LAYERS * PPL;   /* 40 */
@@ -63,6 +67,16 @@ static float layerReal(int off, float n)
     case oRelease:   return 5.0f + n * n * 3995.0f;     /* 5..4000 ms     */
     case oGrainSize: return 5.0f + n * n * 495.0f;      /* 5..500 ms      */
     case oDensity:   return 1.0f + n * n * 99.0f;       /* 1..100 gr/s    */
+    case oSpray:     return n * n * 500.0f;             /* 0..500 ms      */
+    case oPitchJit:  return n * 12.0f;                  /* 0..12 st       */
+    case oPanSpread: return n;                          /* 0..1           */
+    case oRevProb:   return n;                          /* 0..1           */
+    case oScan:      return (n - 0.5f) * 2.0f;          /* -1..+1         */
+    case oShape:     return n;                          /* 0..1           */
+    case oBits:      return 16.0f - n * 15.0f;          /* 16..1 bits     */
+    case oDeci:      return 1.0f + n * n * 49.0f;       /* 1..50          */
+    case oChaos:     return n;                          /* 0..1           */
+    case oTimeJit:   return n;                          /* 0..1           */
     }
     return n;
 }
@@ -84,6 +98,17 @@ static const ParamMeta kLayerMeta[PPL] = {
     { "Rel",  "ms",   0.30f },
     { "GrSz", "ms",   0.35f },
     { "GrDn", "gr/s", 0.45f },
+    /* experimental granular — all default to neutral / off */
+    { "Spray","ms",   0.00f },
+    { "PJit", "st",   0.00f },
+    { "Pan",  "%",    0.00f },
+    { "Rev",  "%",    0.00f },
+    { "Scan", "%",    0.50f },   /* -> 0 */
+    { "Shape","%",    0.50f },   /* -> symmetric */
+    { "Bits", "bit",  0.00f },   /* -> 16 (clean) */
+    { "Deci", "x",    0.00f },   /* -> 1 (off) */
+    { "Chaos","%",    0.00f },
+    { "TJit", "%",    0.00f },
 };
 
 static const char* kModeNames[LOOP_MODE_COUNT] = { "OneShot", "Forward", "Granular" };
@@ -125,6 +150,16 @@ struct Plugin {
         lp.releaseMs     = layerReal(oRelease,   params[base + oRelease]);
         lp.grainMs       = layerReal(oGrainSize, params[base + oGrainSize]);
         lp.density       = layerReal(oDensity,   params[base + oDensity]);
+        lp.sprayMs       = layerReal(oSpray,     params[base + oSpray]);
+        lp.pitchJit      = layerReal(oPitchJit,  params[base + oPitchJit]);
+        lp.panSpread     = layerReal(oPanSpread, params[base + oPanSpread]);
+        lp.revProb       = layerReal(oRevProb,   params[base + oRevProb]);
+        lp.scan          = layerReal(oScan,      params[base + oScan]);
+        lp.shape         = layerReal(oShape,     params[base + oShape]);
+        lp.bits          = layerReal(oBits,      params[base + oBits]);
+        lp.decimate      = layerReal(oDeci,      params[base + oDeci]);
+        lp.chaos         = layerReal(oChaos,     params[base + oChaos]);
+        lp.timeJit       = layerReal(oTimeJit,   params[base + oTimeJit]);
         if (lp.loopEnd < lp.loopStart + 0.001f) lp.loopEnd = lp.loopStart + 0.001f;
         return lp;
     }
@@ -153,6 +188,37 @@ struct Plugin {
         s->computePeaks();
         engine.layers[l].publish(s);
         return true;
+    }
+
+    /* load a .txt chaos seed (GUI thread) */
+    bool loadSeed(const char* path)
+    {
+        FILE* f = fopen(path, "rb");
+        if (!f) return false;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz <= 0 || sz > (4L << 20)) { fclose(f); return false; }  /* cap 4MB */
+        SeedData* sd = new SeedData();
+        sd->bytes.resize((size_t)sz);
+        size_t got = fread(sd->bytes.data(), 1, (size_t)sz, f);
+        fclose(f);
+        if (got != (size_t)sz) { delete sd; return false; }
+        uint32_t h = 0x811C9DC5u;                     /* FNV-1a */
+        for (uint8_t b : sd->bytes) { h ^= b; h *= 16777619u; }
+        sd->hash = h;
+        sd->path = path;
+        engine.publishSeed(sd);
+        return true;
+    }
+
+    std::string seedName() const
+    {
+        SeedData* s = engine.seedPending.load();
+        if (!s) s = engine.seedLive.load();
+        if (!s || s->path.empty()) return std::string();
+        size_t sl = s->path.find_last_of("/\\");
+        return sl == std::string::npos ? s->path : s->path.substr(sl + 1);
     }
 };
 
@@ -225,13 +291,17 @@ static float getParameter(AEffect* e, int32_t index)
  */
 static std::string buildChunk(Plugin* p)
 {
-    std::string s = "SMPL2\n";
+    std::string s = "SMPL3\n";
     for (int i = 0; i < NUM_LAYERS; i++) {
         Sample* smp = p->engine.layers[i].live.load();
         Sample* pnd = p->engine.layers[i].pending.load();
         const std::string& path = pnd ? pnd->path : (smp ? smp->path : std::string());
         s += path; s += "\n";
     }
+    /* trailing line: chaos seed path (blank if none) */
+    SeedData* sd = p->engine.seedPending.load();
+    if (!sd) sd = p->engine.seedLive.load();
+    s += (sd ? sd->path : std::string()); s += "\n";
     return s;
 }
 
@@ -240,7 +310,11 @@ static void applyChunk(Plugin* p, const char* data, int len)
     if (!data || len < 5) return;
     std::string s(data, (size_t)len);
     size_t nl = s.find('\n');
-    if (nl == std::string::npos || s.compare(0, 5, "SMPL2") != 0) return;
+    /* accept SMPL2 (no seed) and SMPL3 (with seed line) */
+    if (nl == std::string::npos ||
+        (s.compare(0, 5, "SMPL3") != 0 && s.compare(0, 5, "SMPL2") != 0))
+        return;
+    bool hasSeed = s.compare(0, 5, "SMPL3") == 0;
     size_t pos = nl + 1;
     for (int i = 0; i < NUM_LAYERS && pos <= s.size(); i++) {
         size_t e = s.find('\n', pos);
@@ -248,6 +322,12 @@ static void applyChunk(Plugin* p, const char* data, int len)
         std::string path = s.substr(pos, e - pos);
         if (!path.empty()) p->loadLayer(i, path.c_str());
         pos = e + 1;
+    }
+    if (hasSeed && pos <= s.size()) {
+        size_t e = s.find('\n', pos);
+        if (e == std::string::npos) e = s.size();
+        std::string seed = s.substr(pos, e - pos);
+        if (!seed.empty()) p->loadSeed(seed.c_str());
     }
 }
 
@@ -273,13 +353,21 @@ static void paramDisplay(Plugin* p, int idx, char* out)
     int layer, off; splitIndex(idx, layer, off);
     float v = layerReal(off, p->params[idx]);
     switch (off) {
-    case oVolume:  snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); break;
-    case oSustain: snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); break;
+    case oVolume:
+    case oSustain:
     case oLoopStart:
-    case oLoopEnd: snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); break;
+    case oLoopEnd:
+    case oPanSpread:
+    case oRevProb:
+    case oShape:
+    case oChaos:
+    case oTimeJit: snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); break;
+    case oScan:    snprintf(out, 16, "%+d", (int)(v * 100)); break;
     case oTune:    snprintf(out, 16, "%+d", (int)v); break;
     case oMode:    snprintf(out, 16, "%s", kModeNames[(int)v & 3]); break;
     case oPlay:    snprintf(out, 16, "%s", v >= 0.5f ? "Start" : "Loop"); break;
+    case oBits:    snprintf(out, 16, "%d", (int)(v + 0.5f)); break;
+    case oDeci:    snprintf(out, 16, "%dx", (int)(v + 0.5f)); break;
     default:       if (v >= 100.0f) snprintf(out, 16, "%d", (int)(v + 0.5f));
                    else snprintf(out, 16, "%.1f", v);
     }

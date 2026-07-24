@@ -4,7 +4,27 @@ A 3-layer granular sampler VST2 instrument for Ableton Live 9 on Windows 10,
 with a native Win32 GUI. Built entirely on GitHub Actions — no local toolchain
 required.
 
-## Status: Milestone 2 — GUI + sampler engine
+## Status: Milestone 3 — experimental granular + click-free loops
+
+Adds a deep experimental granular set and fixes loop smoothness on top of the
+milestone-2 GUI sampler:
+
+- **Seamless loops.** The Forward loop now uses a single read pointer with an
+  equal-power (constant-power) crossfade, and the head→loop transition flows
+  through the same fade — no hard jump at the seam even when the Overlap is
+  larger than the loop, so there's no click. The crossfade region is shaded
+  **amber** in the waveform so you can see exactly where it blends.
+- **10 experimental granular controls per layer:** Spray (grain scatter),
+  PJit (per-grain detune), Pan (stereo scatter), Rev (reverse-grain
+  probability), Scan (drift the grain source through the loop), Shape (grain
+  window skew), Bits (bit-crush), Deci (sample-rate reduction), Chaos
+  (seed-driven bit rearranging), TJit (grain spawn-time jitter).
+- **Chaos SEED (.txt).** Drop a text file on the top bar (or double-click the
+  SEED box). Its bytes deterministically steer the "chaotic bit re-arranging"
+  glitch driven by the per-layer **Chaos** knob — same seed + note reproduces
+  the same mangling.
+
+## Editor + engine (from milestone 2)
 
 Loads as an Instrument with a **native editor** and three independent sample
 layers, stacked and played monophonically from MIDI. Each layer:
@@ -26,8 +46,8 @@ layers, stacked and played monophonically from MIDI. Each layer:
   rate; C4 (note 60) plays at native pitch.
 
 A global **Master** volume sits at the top. Everything is exposed as an
-automatable VST parameter (40 in total). Sample **file paths** are saved with
-the preset/Live set and reloaded on recall.
+automatable VST parameter (70 in total). Sample **file paths** and the chaos
+**seed path** are saved with the preset/Live set and reloaded on recall.
 
 > Formats: 16/24/32-bit PCM and 32/64-bit float WAV, mono or stereo. Voicing is
 > monophonic (one note drives all three layers). AIFF/compressed formats and
@@ -64,34 +84,46 @@ attaches both DLLs to the release automatically.
 
 ## Using the editor
 
-- **Load:** drag a `.wav` onto one of the three lanes, or double-click a lane's
-  waveform to open a file browser.
-- **Loop points:** drag the two yellow handles in the waveform.
+- **Load a sample:** drag a `.wav` onto one of the three lanes, or double-click
+  a lane's waveform to open a file browser.
+- **Load a chaos seed:** drag a `.txt` anywhere onto the window, or double-click
+  the **CHAOS SEED** box in the top bar.
+- **Loop points:** drag the two yellow handles in the waveform. The amber bands
+  show the crossfade/overlap region.
 - **Mode / Play:** click the **Mode** button to cycle OneShot → Forward →
   Granular; click the **From start / From loop** button to toggle.
-- **Knobs:** drag any knob **vertically** to change its value (Vol, Tune,
-  Overlap, A/D/S/R, Grain size, Density).
+- **Knobs:** drag any knob **vertically** to change its value.
 - **Playhead:** the red line tracks playback while a note sounds.
 
 ## Parameters
 
-Master volume (index 0), then 13 parameters per layer L1–L3:
+Master volume (index 0), then 23 parameters per layer L1–L3:
 
-| Name | Range            | Notes                                   |
-|------|------------------|-----------------------------------------|
-| Vol  | 0–100 %          | layer volume                            |
-| Tune | −100…+100 cents  | fine tune                               |
-| Mode | OneShot/Fwd/Gran | loop mode                               |
-| Play | From loop/start  | play head before entering the loop      |
-| LpSt | 0–100 %          | loop start (fraction of sample)         |
-| LpEn | 0–100 %          | loop end                                |
-| Ovlp | 0–500 ms         | loop crossfade (Forward mode)           |
-| Atk  | 1–2000 ms        | amp attack                              |
-| Dec  | 1–2000 ms        | amp decay                               |
-| Sus  | 0–100 %          | amp sustain                             |
-| Rel  | 5–4000 ms        | amp release                             |
-| GrSz | 5–500 ms         | grain size (Granular mode)              |
-| GrDn | 1–100 grains/s   | grain density (Granular mode)           |
+| Name  | Range            | Notes                                        |
+|-------|------------------|----------------------------------------------|
+| Vol   | 0–100 %          | layer volume                                 |
+| Tune  | −100…+100 cents  | fine tune                                    |
+| Mode  | OneShot/Fwd/Gran | loop mode                                    |
+| Play  | From loop/start  | play head before entering the loop           |
+| LpSt  | 0–100 %          | loop start (fraction of sample)              |
+| LpEn  | 0–100 %          | loop end                                      |
+| Ovlp  | 0–500 ms         | loop crossfade (Forward mode)                |
+| Atk   | 1–2000 ms        | amp attack                                    |
+| Dec   | 1–2000 ms        | amp decay                                     |
+| Sus   | 0–100 %          | amp sustain                                   |
+| Rel   | 5–4000 ms        | amp release                                   |
+| GrSz  | 5–500 ms         | grain size (Granular mode)                    |
+| GrDn  | 1–100 grains/s   | grain density (Granular mode)                 |
+| Spray | 0–500 ms         | random grain-start scatter                    |
+| PJit  | 0–12 st          | per-grain random detune                       |
+| Pan   | 0–100 %          | per-grain stereo scatter                      |
+| Rev   | 0–100 %          | probability a grain plays reversed            |
+| Scan  | −100…+100 %      | drift the grain source through the loop       |
+| Shape | 0–100 %          | grain window skew (50 % = symmetric)          |
+| Bits  | 16–1 bit         | bit-crush depth (16 = clean)                  |
+| Deci  | 1–50×            | sample-rate reduction (1 = off)               |
+| Chaos | 0–100 %          | seed-driven chaotic bit rearranging           |
+| TJit  | 0–100 %          | grain spawn-time jitter                       |
 
 ## Building locally (optional)
 

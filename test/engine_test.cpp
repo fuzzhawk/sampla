@@ -136,6 +136,57 @@ int main()
       bool fin; double rms = runNote(eng, lp, 512, 40, false, fin);
       CHECK(fin && rms > 0.01, "pitch: +12 semitones still renders cleanly"); }
 
+    /* --- Loop seam is click-free: a big overlap on a short loop must not
+     *     produce a sample-to-sample jump beyond the sine's own slope. --- */
+    { LayerParams lp; lp.mode = LOOP_FORWARD;
+      lp.loopStart = 0.30f; lp.loopEnd = 0.50f;   /* 0.2s loop            */
+      lp.overlapMs = 300.0f;                       /* clamped, exceeds loop */
+      lp.attackMs = 1; lp.decayMs = 1; lp.sustain = 1.0f;
+      eng.noteOn(60);
+      const int B = 512, N = 300;
+      std::vector<float> L(B), R(B); float* out[2] = { L.data(), R.data() };
+      LayerParams a[3] = { lp, LayerParams(), LayerParams() };
+      a[1].volume = a[2].volume = 0;
+      float prev = 0; double maxJump = 0; bool fin = true; long seen = 0;
+      for (int b = 0; b < N; b++) {
+          std::fill(L.begin(), L.end(), 0.0f); std::fill(R.begin(), R.end(), 0.0f);
+          eng.process(out, B, a);
+          for (int i = 0; i < B; i++) {
+              if (!std::isfinite(L[i])) fin = false;
+              if (seen > 8192) {                    /* skip attack + head pass */
+                  double d = fabs(L[i] - prev);
+                  if (d > maxJump) maxJump = d;
+              }
+              prev = L[i]; seen++;
+          }
+      }
+      CHECK(fin, "seam: output stays finite through many loops");
+      printf("      (max sample-to-sample jump = %.4f)\n", maxJump);
+      CHECK(maxJump < 0.12, "seam: no click (bounded discontinuity at loop)"); }
+
+    /* --- Experimental granular params render finite, audible output --- */
+    { LayerParams lp; lp.mode = LOOP_GRANULAR; lp.loopStart = 0.1f; lp.loopEnd = 0.9f;
+      lp.playFromStart = false; lp.attackMs = 5; lp.releaseMs = 100;
+      lp.grainMs = 40; lp.density = 40;
+      lp.sprayMs = 80; lp.pitchJit = 5; lp.panSpread = 0.8f; lp.revProb = 0.4f;
+      lp.scan = 0.5f; lp.shape = 0.3f; lp.timeJit = 0.6f;
+      eng.noteOn(60);
+      bool fin; double rms = runNote(eng, lp, 512, 200, false, fin);
+      CHECK(fin, "experimental: spray/jit/pan/rev/scan/shape stay finite");
+      CHECK(rms > 0.003, "experimental: granular cloud still audible"); }
+
+    /* --- Bitcrush + decimate + chaos: mangled but finite and deterministic --- */
+    { LayerParams lp; lp.mode = LOOP_FORWARD; lp.loopStart = 0; lp.loopEnd = 1;
+      lp.attackMs = 1; lp.sustain = 1.0f;
+      lp.bits = 4.0f; lp.decimate = 8.0f; lp.chaos = 0.8f;
+      eng.noteOn(60);
+      bool fin; double rms1 = runNote(eng, lp, 512, 60, false, fin);
+      CHECK(fin, "mangle: bitcrush+decimate+chaos stay finite");
+      CHECK(rms1 > 0.005, "mangle: still produces output");
+      eng.noteOn(60);
+      bool fin2; double rms2 = runNote(eng, lp, 512, 60, false, fin2);
+      CHECK(fabs(rms1 - rms2) < 1e-6, "mangle: chaos is deterministic"); }
+
     delete s;
     printf(failures ? "\n%d CHECK(S) FAILED\n" : "\nALL ENGINE CHECKS PASSED\n", failures);
     return failures ? 1 : 0;
