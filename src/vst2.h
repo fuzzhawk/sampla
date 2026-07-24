@@ -95,8 +95,33 @@ enum {
 enum {
     audioMasterAutomate      = 0,
     audioMasterVersion       = 1,
+    audioMasterGetTime       = 7,
     audioMasterGetSampleRate = 16,
     audioMasterGetBlockSize  = 17
+};
+
+/* Time info (returned by audioMasterGetTime) */
+struct VstTimeInfo {
+    double samplePos;
+    double sampleRate;
+    double nanoSeconds;
+    double ppqPos;            /* musical position in quarter notes */
+    double tempo;             /* BPM */
+    double barStartPos;
+    double cycleStartPos;
+    double cycleEndPos;
+    int32_t timeSigNumerator;
+    int32_t timeSigDenominator;
+    int32_t smpteOffset;
+    int32_t smpteFrameRate;
+    int32_t samplesToNextClock;
+    int32_t flags;
+};
+
+enum {
+    kVstTransportPlaying = 1 << 1,
+    kVstPpqPosValid      = 1 << 9,
+    kVstTempoValid       = 1 << 10
 };
 
 /* MIDI events */

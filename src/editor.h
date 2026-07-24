@@ -5,13 +5,12 @@
  * defined, so it can call straight into them. Everything here is Windows-only
  * (the DSP in engine.h stays platform-neutral for the CI smoke test).
  *
- * Layout: three stacked lanes. Each lane has a waveform view (loop region, the
- * crossfade/overlap bands shaded amber, draggable loop handles, and a live
- * playhead), Mode and Play buttons, and a panel of 19 knobs — the core sampler
- * controls plus the experimental granular set (Spray, PJit, Pan, Rev, Scan,
- * Shape, Bits, Deci, Chaos, TJit). A global chaos SEED (.txt) sits in the top
- * bar. Drop a .wav on a lane to load a sample; drop a .txt anywhere (or
- * double-click the SEED box) to load the chaos seed.
+ * Layout: three stacked lanes (waveform with loop region, amber overlap bands,
+ * draggable handles and live playhead; Mode / Play / Spec buttons; 25 knobs in
+ * three rows — core sampler, experimental granular, wav operators). Below the
+ * lanes sits the tempo-synced GLITCH bar: 16 step cells (click cycles the
+ * algorithm, right-click clears; the playing step is highlighted) plus Div,
+ * Mix and Master knobs. A global chaos SEED (.txt) box sits in the top bar.
  */
 #ifndef EDITOR_H
 #define EDITOR_H
@@ -26,28 +25,33 @@
 struct ERect { int16_t top, left, bottom, right; };
 
 static const int ED_W = 980;
-static const int ED_H = 560;
+static const int ED_H = 726;
 static const int LANE_TOP = 34;
-static const int LANE_H   = 174;
+static const int LANE_H   = 200;
 static const int WAVE_X   = 12;
 static const int WAVE_X2  = 556;
 static const int KNOB_R   = 13;
 static const int KCOL0    = 586;   /* first knob column center */
-static const int KCOLW    = 40;    /* column spacing            */
+static const int KCOLW    = 42;    /* column spacing            */
+static const int GBAR_Y   = LANE_TOP + 3 * LANE_H;   /* 634 */
 
-/* the 19 knobs shown per lane (everything except Mode/Play buttons and the
- * two loop handles, which live in the waveform) */
-static const int NKNOBS = 19;
+/* the 25 knobs shown per lane, rows of 9 */
+static const int NKNOBS = 25;
 static const int kKnobOff[NKNOBS] = {
     oVolume, oTune, oOverlap, oAttack, oDecay, oSustain, oRelease,
-    oGrainSize, oDensity, oSpray, oPitchJit, oPanSpread, oRevProb,
-    oScan, oShape, oBits, oDeci, oChaos, oTimeJit
+    oGrainSize, oDensity,
+    oSpray, oPitchJit, oPanSpread, oRevProb, oScan, oShape, oTimeJit,
+    oBits, oDeci,
+    oChaos, oStrch, oTonal, oTilt, oShift, oFrz, oSAmt
 };
 static const char* kKnobLbl[NKNOBS] = {
     "Vol", "Tune", "Ovlp", "Atk", "Dec", "Sus", "Rel", "Grain", "Dens",
-    "Spray", "PJit", "Pan", "Rev", "Scan", "Shape", "Bits", "Deci",
-    "Chaos", "TJit"
+    "Spray", "PJit", "Pan", "Rev", "Scan", "Shape", "TJit", "Bits", "Deci",
+    "Chaos", "Strch", "Tonal", "Tilt", "Shft", "Frz", "SAmt"
 };
+
+/* glitch-bar knobs: {param index, x center} resolved at draw/hit time */
+static const int NGKNOBS = 3;
 
 static ERect     g_rect = { 0, 0, (int16_t)ED_H, (int16_t)ED_W };
 static HINSTANCE g_hInst = nullptr;
@@ -71,23 +75,39 @@ static inline void waveRect(int l, RECT* r)
 }
 static inline void knobCenter(int l, int k, int* cx, int* cy)
 {
-    int col = k % 10, row = k / 10;
+    int col = k % 9, row = k / 9;
     *cx = KCOL0 + col * KCOLW;
-    *cy = laneTopY(l) + 52 + row * 66;
+    *cy = laneTopY(l) + 44 + row * 62;
 }
 static inline void modeBtnRect(int l, RECT* r)
 {
-    r->left = 300; r->right = 372;
+    r->left = 240; r->right = 312;
     r->top = laneTopY(l) + 3; r->bottom = laneTopY(l) + 20;
 }
 static inline void playBtnRect(int l, RECT* r)
 {
-    r->left = 380; r->right = 470;
+    r->left = 318; r->right = 400;
+    r->top = laneTopY(l) + 3; r->bottom = laneTopY(l) + 20;
+}
+static inline void specBtnRect(int l, RECT* r)
+{
+    r->left = 406; r->right = 490;
     r->top = laneTopY(l) + 3; r->bottom = laneTopY(l) + 20;
 }
 static inline void seedBtnRect(RECT* r)
 {
     r->left = 640; r->right = 968; r->top = 6; r->bottom = 25;
+}
+static inline void glitchCellRect(int i, RECT* r)
+{
+    r->left = 12 + i * 44; r->right = r->left + 40;
+    r->top = GBAR_Y + 30; r->bottom = GBAR_Y + 72;
+}
+static inline void glitchKnob(int k, int* cx, int* cy, int* param)
+{
+    static const int px[NGKNOBS] = { 780, 840, 920 };
+    static const int pp[NGKNOBS] = { gDiv, gMix, 0 };   /* 0 = Master */
+    *cx = px[k]; *cy = GBAR_Y + 50; *param = pp[k];
 }
 static inline bool inRect(const RECT& r, int x, int y)
 {
@@ -122,6 +142,14 @@ static void drawKnob(HDC dc, int cx, int cy, float val, const char* label,
     DrawTextA(dc, value, -1, &vl, DT_CENTER | DT_SINGLELINE);
 }
 
+static void drawTextBtn(HDC dc, const RECT& r, const char* text)
+{
+    HBRUSH bb = CreateSolidBrush(RGB(48, 52, 66));
+    FillRect(dc, &r, bb); DeleteObject(bb);
+    SetTextColor(dc, RGB(215, 220, 232));
+    DrawTextA(dc, text, -1, (RECT*)&r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
 static void drawLane(HDC dc, Plugin* p, int l)
 {
     int top = laneTopY(l);
@@ -134,29 +162,28 @@ static void drawLane(HDC dc, Plugin* p, int l)
 
     Sample* s = p->engine.layers[l].live.load();
     SetTextColor(dc, RGB(190, 196, 208));
-    const char* fname = "— drop a .wav here (or double-click) —";
+    const char* fname = "— drop a .wav (or double-click) —";
     std::string base;
     if (s && !s->path.empty()) {
         size_t sl = s->path.find_last_of("/\\");
         base = (sl == std::string::npos) ? s->path : s->path.substr(sl + 1);
         char info[160];
-        snprintf(info, sizeof(info), "%s   (%.1fs @ %dHz)",
+        snprintf(info, sizeof(info), "%s (%.1fs @ %dHz)",
                  base.c_str(), s->frames / (float)s->srcRate, s->srcRate);
         base = info; fname = base.c_str();
     }
     TextOutA(dc, WAVE_X + 30, top + 3, fname, (int)strlen(fname));
 
-    /* mode + play buttons */
+    /* mode / play / spec buttons */
     int mode = (int)layerReal(oMode, p->params[base0 + oMode]);
     bool play = layerReal(oPlay, p->params[base0 + oPlay]) >= 0.5f;
-    RECT mr, pr; modeBtnRect(l, &mr); playBtnRect(l, &pr);
-    HBRUSH bb = CreateSolidBrush(RGB(48, 52, 66));
-    FillRect(dc, &mr, bb); FillRect(dc, &pr, bb); DeleteObject(bb);
-    SetTextColor(dc, RGB(215, 220, 232));
+    int smode = (int)layerReal(oSMode, p->params[base0 + oSMode]);
+    RECT mr, pr, sr2; modeBtnRect(l, &mr); playBtnRect(l, &pr); specBtnRect(l, &sr2);
     char mb[24]; snprintf(mb, sizeof(mb), "Mode: %s", kModeNames[mode & 3]);
-    DrawTextA(dc, mb, -1, &mr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    char pb[24]; snprintf(pb, sizeof(pb), "%s", play ? "From start" : "From loop");
-    DrawTextA(dc, pb, -1, &pr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    drawTextBtn(dc, mr, mb);
+    drawTextBtn(dc, pr, play ? "From start" : "From loop");
+    char sb[24]; snprintf(sb, sizeof(sb), "Spec: %s", kSpecNames[smode % SPEC_MODE_COUNT]);
+    drawTextBtn(dc, sr2, sb);
 
     /* waveform background */
     RECT wr; waveRect(l, &wr);
@@ -232,6 +259,52 @@ static void drawLane(HDC dc, Plugin* p, int l)
     }
 }
 
+static void drawGlitchBar(HDC dc, Plugin* p)
+{
+    SetTextColor(dc, RGB(230, 190, 120));
+    TextOutA(dc, 12, GBAR_Y + 8, "GLITCH SEQ", 10);
+    SetTextColor(dc, RGB(140, 146, 160));
+    const char* legend =
+        "click: cycle algo  ·  right-click: clear  ·  - Stut St16 Rev Tape Half Gate Scrm";
+    TextOutA(dc, 110, GBAR_Y + 10, legend, (int)strlen(legend));
+
+    int cur = p->engine.glitchStep.load();
+    static const COLORREF algoCol[GL_ALGO_COUNT] = {
+        RGB(38, 40, 50),  RGB(70, 110, 170), RGB(70, 140, 190),
+        RGB(150, 90, 170), RGB(170, 110, 60), RGB(90, 150, 90),
+        RGB(170, 150, 60), RGB(180, 70, 90)
+    };
+
+    for (int i = 0; i < 16; i++) {
+        RECT r; glitchCellRect(i, &r);
+        int algo = (int)glitchReal(GLITCH_BASE + i, p->params[GLITCH_BASE + i]);
+        HBRUSH b = CreateSolidBrush(algoCol[algo % GL_ALGO_COUNT]);
+        FillRect(dc, &r, b); DeleteObject(b);
+        if (i == cur) {                          /* playing-step highlight */
+            HPEN hp = CreatePen(PS_SOLID, 2, RGB(250, 240, 200));
+            HGDIOBJ o = SelectObject(dc, hp);
+            HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            Rectangle(dc, r.left, r.top, r.right, r.bottom);
+            SelectObject(dc, o); SelectObject(dc, ob); DeleteObject(hp);
+        }
+        SetTextColor(dc, RGB(225, 230, 240));
+        DrawTextA(dc, kGlitchNames[algo % GL_ALGO_COUNT], -1, &r,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if ((i & 3) == 0) {                      /* beat marker */
+            SetTextColor(dc, RGB(120, 126, 140));
+            char num[4]; snprintf(num, sizeof(num), "%d", i / 4 + 1);
+            TextOutA(dc, r.left + 2, r.top - 14, num, (int)strlen(num));
+        }
+    }
+
+    static const char* gl2[NGKNOBS] = { "Div", "Mix", "Master" };
+    for (int k = 0; k < NGKNOBS; k++) {
+        int cx, cy, param; glitchKnob(k, &cx, &cy, &param);
+        char val[16]; paramDisplay(p, param, val);
+        drawKnob(dc, cx, cy, p->params[param], gl2[k], val);
+    }
+}
+
 static void paintEditor(HWND hwnd, Plugin* p)
 {
     PAINTSTRUCT ps;
@@ -267,6 +340,7 @@ static void paintEditor(HWND hwnd, Plugin* p)
     DrawTextA(dc, seedLine, -1, &sr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     for (int l = 0; l < NUM_LAYERS; l++) drawLane(dc, p, l);
+    drawGlitchBar(dc, p);
 
     BitBlt(hdc, 0, 0, ED_W, ED_H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob); DeleteObject(bmp); DeleteDC(dc);
@@ -318,15 +392,48 @@ static int laneAt(int y)
     return -1;
 }
 
+/* click in the glitch bar: cells cycle algorithms, knobs start a drag */
+static bool glitchBarClick(EditorState* st, int x, int y, bool rightBtn)
+{
+    Plugin* p = st->p;
+    if (y < GBAR_Y) return false;
+    for (int i = 0; i < 16; i++) {
+        RECT r; glitchCellRect(i, &r);
+        if (inRect(r, x, y)) {
+            int idx = GLITCH_BASE + i;
+            int algo = (int)glitchReal(idx, p->params[idx]);
+            int next = rightBtn ? 0 : (algo + 1) % GL_ALGO_COUNT;
+            p->setParamFromUI(idx, (next + 0.5f) / (float)GL_ALGO_COUNT);
+            InvalidateRect(st->hwnd, nullptr, FALSE);
+            return true;
+        }
+    }
+    if (!rightBtn) {
+        for (int k = 0; k < NGKNOBS; k++) {
+            int cx, cy, param; glitchKnob(k, &cx, &cy, &param);
+            if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <=
+                (KNOB_R + 4) * (KNOB_R + 4)) {
+                st->dragKind = 1;
+                st->dragParam = param;
+                st->dragStartY = y;
+                st->dragStartVal = p->params[param];
+                return true;
+            }
+        }
+    }
+    return true;   /* clicks in the bar never fall through to lanes */
+}
+
 static void onLDown(EditorState* st, int x, int y)
 {
     Plugin* p = st->p;
+    if (glitchBarClick(st, x, y, false)) return;
     int l = laneAt(y);
     if (l < 0) return;
     int base0 = 1 + l * PPL;
 
-    /* mode / play buttons */
-    RECT mr, pr; modeBtnRect(l, &mr); playBtnRect(l, &pr);
+    /* mode / play / spec buttons */
+    RECT mr, pr, sr2; modeBtnRect(l, &mr); playBtnRect(l, &pr); specBtnRect(l, &sr2);
     if (inRect(mr, x, y)) {
         int m = ((int)layerReal(oMode, p->params[base0 + oMode]) + 1) % LOOP_MODE_COUNT;
         p->setParamFromUI(base0 + oMode, (m + 0.5f) / (float)LOOP_MODE_COUNT);
@@ -335,6 +442,11 @@ static void onLDown(EditorState* st, int x, int y)
     if (inRect(pr, x, y)) {
         bool on = layerReal(oPlay, p->params[base0 + oPlay]) >= 0.5f;
         p->setParamFromUI(base0 + oPlay, on ? 0.0f : 1.0f);
+        InvalidateRect(st->hwnd, nullptr, FALSE); return;
+    }
+    if (inRect(sr2, x, y)) {
+        int m = ((int)layerReal(oSMode, p->params[base0 + oSMode]) + 1) % SPEC_MODE_COUNT;
+        p->setParamFromUI(base0 + oSMode, (m + 0.5f) / (float)SPEC_MODE_COUNT);
         InvalidateRect(st->hwnd, nullptr, FALSE); return;
     }
 
@@ -403,6 +515,9 @@ static LRESULT CALLBACK EditorProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 1;   /* handled in WM_PAINT */
     case WM_LBUTTONDOWN:
         if (st) { SetCapture(hwnd); onLDown(st, (short)LOWORD(lp), (short)HIWORD(lp)); }
+        return 0;
+    case WM_RBUTTONDOWN:
+        if (st) glitchBarClick(st, (short)LOWORD(lp), (short)HIWORD(lp), true);
         return 0;
     case WM_MOUSEMOVE:
         if (st) onMove(st, (short)LOWORD(lp), (short)HIWORD(lp));
@@ -496,7 +611,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 #else  /* !_WIN32 — headless build: editor is a no-op so DSP still compiles */
 
 struct ERect { int16_t top, left, bottom, right; };
-static ERect g_rect = { 0, 0, 560, 980 };
+static ERect g_rect = { 0, 0, 726, 980 };
 static ERect* editorRect() { return &g_rect; }
 static bool editorOpen(Plugin*, void*) { return false; }
 static void editorClose(Plugin*) {}

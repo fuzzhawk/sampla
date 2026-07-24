@@ -4,7 +4,33 @@ A 3-layer granular sampler VST2 instrument for Ableton Live 9 on Windows 10,
 with a native Win32 GUI. Built entirely on GitHub Actions — no local toolchain
 required.
 
-## Status: Milestone 3 — experimental granular + click-free loops
+## Status: Milestone 4 — glitch sequencer + wav operators
+
+- **Tempo-synced glitch engine.** A 16-step sequencer bar (classic trance
+  grid, beat markers every 4 steps) follows the DAW transport via VST
+  time-info (ppq + tempo), falling back to an internal clock when the host
+  doesn't provide one. Each step picks one of **7 realtime loop-rearrange
+  algorithms** — Stutter, Stutter-16, Reverse, Tapestop, Half-speed, trance
+  Gate, and chaos-seeded slice Scramble — applied to the summed bus by
+  snapshotting the previous step's audio and rearranging it live. Click a
+  cell to cycle the algorithm, right-click to clear; the playing step is
+  highlighted. Div (1/32…1/4) and Mix knobs sit beside the grid; the whole
+  pattern is automatable (params St01–St16).
+- **Wav operators per layer** (7 more knobs/controls): **Strch** —
+  pitch-preserving time stretch 0.25–4× (grain-stream OLA); **Tonal** —
+  spectral tonal/atonal balance (isolate peaks vs residual noise); **Tilt** —
+  spectral dark/bright tilt; **Shft** — inharmonic spectral bin shift;
+  **Frz** — spectral magnitude freeze (phases keep running → shimmer);
+  plus the **Spec** mode button and **SAmt** intensity knob.
+- **7 chaotic spectral artifact modes** (Spec button): Scramble (seed-driven
+  bin swaps), Robot (phase collapse), Whisper (phase randomize), Holes
+  (spectral dropouts), Mirror (spectrum fold), Crush (magnitude quantize),
+  Smear (spectral trails). Randomness is steered by the chaos seed.
+- **Fix:** with `effFlagsProgramChunks`, hosts persist only the chunk — knob
+  positions were never saved. The chunk (SMPL4) now serializes all params
+  alongside the sample/seed paths, so the full state survives a reload.
+
+## Milestone 3 — experimental granular + click-free loops
 
 Adds a deep experimental granular set and fixes loop smoothness on top of the
 milestone-2 GUI sampler:
@@ -97,7 +123,8 @@ attaches both DLLs to the release automatically.
 
 ## Parameters
 
-Master volume (index 0), then 23 parameters per layer L1–L3:
+109 total: Master (0), 30 per layer L1–L3 (1–90), glitch sequencer (91–108:
+St01–St16 step algorithms, GDiv, GMix). Per-layer:
 
 | Name  | Range            | Notes                                        |
 |-------|------------------|----------------------------------------------|
@@ -124,6 +151,13 @@ Master volume (index 0), then 23 parameters per layer L1–L3:
 | Deci  | 1–50×            | sample-rate reduction (1 = off)               |
 | Chaos | 0–100 %          | seed-driven chaotic bit rearranging           |
 | TJit  | 0–100 %          | grain spawn-time jitter                       |
+| Strch | 0.25–4×          | pitch-preserving time stretch                 |
+| Tonal | −100…+100 %      | spectral tonal/atonal balance                 |
+| Tilt  | −100…+100 %      | spectral dark/bright tilt                     |
+| Shft  | −64…+64 bins     | inharmonic spectral shift                     |
+| Frz   | 0–100 %          | spectral magnitude freeze                     |
+| SMode | Off + 7 modes    | chaotic spectral artifact mode                |
+| SAmt  | 0–100 %          | artifact-mode intensity                       |
 
 ## Building locally (optional)
 

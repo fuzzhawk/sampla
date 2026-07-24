@@ -2,7 +2,7 @@ CXXFLAGS = -O2 -shared -static -static-libgcc -static-libstdc++ -Wall -Wextra -s
 # Win32 GUI editor: GDI, common dialogs, shell (drag-and-drop)
 LDLIBS = -lgdi32 -lcomdlg32 -lole32 -lshell32 -luser32
 
-HDRS = src/vst2.h src/engine.h src/wav.h src/editor.h
+HDRS = src/vst2.h src/engine.h src/wav.h src/fft.h src/editor.h
 
 all: build/GranularSampler_x64.dll build/GranularSampler_x86.dll
 
@@ -28,7 +28,7 @@ build/host32.exe: test/host.c
 enginetest: build/engine_test
 	./build/engine_test
 
-build/engine_test: test/engine_test.cpp src/engine.h src/wav.h
+build/engine_test: test/engine_test.cpp src/engine.h src/wav.h src/fft.h
 	mkdir -p build
 	$(CXX) -O2 -std=c++14 -Wall -o $@ test/engine_test.cpp
 

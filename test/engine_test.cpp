@@ -187,6 +187,83 @@ int main()
       bool fin2; double rms2 = runNote(eng, lp, 512, 60, false, fin2);
       CHECK(fabs(rms1 - rms2) < 1e-6, "mangle: chaos is deterministic"); }
 
+    /* --- FFT roundtrip --- */
+    { const int N = 1024;
+      float re[N], im[N], ref[N];
+      uint32_t r = 1;
+      for (int i = 0; i < N; i++) {
+          r = r * 1664525u + 1013904223u;
+          ref[i] = re[i] = ((r >> 8) & 0xFFFF) / 32768.0f - 1.0f;
+          im[i] = 0;
+      }
+      fft_radix2(re, im, N, 0);
+      fft_radix2(re, im, N, 1);
+      double err = 0;
+      for (int i = 0; i < N; i++) err += fabs(re[i] - ref[i]);
+      CHECK(err / N < 1e-5, "fft: forward+inverse roundtrip is exact"); }
+
+    /* --- Time stretch: 2x longer, pitch preserved, finite --- */
+    { LayerParams lp; lp.mode = LOOP_FORWARD; lp.loopStart = 0; lp.loopEnd = 1;
+      lp.attackMs = 1; lp.sustain = 1.0f; lp.strch = 2.0f;
+      eng.noteOn(60);
+      bool fin; double rms = runNote(eng, lp, 512, 100, false, fin);
+      CHECK(fin, "stretch: 2x stretch stays finite");
+      CHECK(rms > 0.01, "stretch: grain-stream produces audio"); }
+
+    /* --- Spectral operators: tonal/tilt/shift/freeze finite + audible --- */
+    { LayerParams lp; lp.mode = LOOP_FORWARD; lp.loopStart = 0; lp.loopEnd = 1;
+      lp.attackMs = 1; lp.sustain = 1.0f;
+      lp.tonal = -0.7f; lp.tilt = 0.5f; lp.shiftBins = 12; lp.freeze = 0.4f;
+      eng.noteOn(60);
+      bool fin; double rms = runNote(eng, lp, 512, 100, false, fin);
+      CHECK(fin, "spectral: tonal+tilt+shift+freeze stay finite");
+      CHECK(rms > 0.003, "spectral: chain passes audio"); }
+
+    /* --- Chaotic spectral modes: every mode finite --- */
+    { bool allFin = true; double anyRms = 0;
+      for (int m = 1; m < SPEC_MODE_COUNT; m++) {
+          LayerParams lp; lp.mode = LOOP_FORWARD; lp.loopStart = 0; lp.loopEnd = 1;
+          lp.attackMs = 1; lp.sustain = 1.0f;
+          lp.specMode = m; lp.specAmt = 0.9f;
+          eng.noteOn(60);
+          bool fin; double rms = runNote(eng, lp, 512, 60, false, fin);
+          if (!fin) allFin = false;
+          if (rms > anyRms) anyRms = rms;
+      }
+      CHECK(allFin, "spectral modes: all 7 artifact modes stay finite");
+      CHECK(anyRms > 0.003, "spectral modes: artifacts still pass audio"); }
+
+    /* --- Glitch sequencer: every algorithm on the internal clock --- */
+    { bool allFin = true; bool allAudible = true;
+      for (int a = 1; a < GL_ALGO_COUNT; a++) {
+          LayerParams lp; lp.mode = LOOP_FORWARD; lp.loopStart = 0; lp.loopEnd = 1;
+          lp.attackMs = 1; lp.sustain = 1.0f;
+          GlitchParams gp;
+          for (int i = 0; i < 16; i++) gp.pattern[i] = (i & 1) ? a : 0;
+          gp.divIdx = 1; gp.mix = 1.0f;
+          eng.glInternalPpq = 0; eng.glTotalWritten = 0;
+          eng.hostPpqValid = false; eng.hostTempo = 140.0;
+          eng.noteOn(60);
+          const int B = 512, NB = 120;
+          std::vector<float> L(B), R(B); float* out[2] = { L.data(), R.data() };
+          LayerParams arr[3] = { lp, LayerParams(), LayerParams() };
+          arr[1].volume = arr[2].volume = 0;
+          double sum = 0; long cnt = 0;
+          for (int b = 0; b < NB; b++) {
+              std::fill(L.begin(), L.end(), 0.0f);
+              std::fill(R.begin(), R.end(), 0.0f);
+              eng.process(out, B, arr);
+              eng.processGlitch(out, B, gp);
+              for (int i = 0; i < B; i++) {
+                  if (!std::isfinite(L[i]) || !std::isfinite(R[i])) allFin = false;
+                  sum += (double)L[i] * L[i]; cnt++;
+              }
+          }
+          if (sqrt(sum / cnt) < 0.005) allAudible = false;
+      }
+      CHECK(allFin, "glitch: all 7 algorithms stay finite (internal clock)");
+      CHECK(allAudible, "glitch: all 7 algorithms pass audio"); }
+
     delete s;
     printf(failures ? "\n%d CHECK(S) FAILED\n" : "\nALL ENGINE CHECKS PASSED\n", failures);
     return failures ? 1 : 0;

@@ -24,7 +24,7 @@
 
 #define PLUGIN_NAME    "Granular Sampler"
 #define PLUGIN_VENDOR  "Morningcloak"
-#define PLUGIN_VERSION 3000            /* 3.0.0.0 */
+#define PLUGIN_VERSION 4000            /* 4.0.0.0 */
 #define PLUGIN_UNIQUE_ID 0x4D436753    /* 'MCgS' */
 
 /* ------------------------------------------------------------ param layout
@@ -37,14 +37,20 @@ enum LayerOff {
     /* experimental granular (milestone 3) */
     oSpray, oPitchJit, oPanSpread, oRevProb, oScan, oShape,
     oBits, oDeci, oChaos, oTimeJit,
-    PPL /* = 23 */
+    /* wav operators (milestone 4) */
+    oStrch, oTonal, oTilt, oShift, oFrz, oSMode, oSAmt,
+    PPL /* = 30 */
 };
 static const int NUM_LAYERS = Engine::NLAYERS;
-static const int NUM_PARAMS = 1 + NUM_LAYERS * PPL;   /* 40 */
+static const int GLITCH_BASE = 1 + NUM_LAYERS * PPL;  /* 91 */
+static const int NUM_GLITCH = 18;                     /* 16 steps + Div + Mix */
+static const int NUM_PARAMS = GLITCH_BASE + NUM_GLITCH; /* 109 */
+static const int gDiv = GLITCH_BASE + 16;
+static const int gMix = GLITCH_BASE + 17;
 
 static inline void splitIndex(int idx, int& layer, int& off)
 {
-    if (idx == 0) { layer = -1; off = -1; return; }   /* master */
+    if (idx == 0 || idx >= GLITCH_BASE) { layer = -1; off = -1; return; }
     int j = idx - 1;
     layer = j / PPL;
     off   = j % PPL;
@@ -77,8 +83,24 @@ static float layerReal(int off, float n)
     case oDeci:      return 1.0f + n * n * 49.0f;       /* 1..50          */
     case oChaos:     return n;                          /* 0..1           */
     case oTimeJit:   return n;                          /* 0..1           */
+    case oStrch:     return powf(4.0f, (n - 0.5f) * 2.0f); /* 0.25..4x    */
+    case oTonal:     return (n - 0.5f) * 2.0f;          /* -1..+1         */
+    case oTilt:      return (n - 0.5f) * 2.0f;          /* -1..+1         */
+    case oShift:     return floorf((n - 0.5f) * 128.0f + 0.5f); /* +-64 bins */
+    case oFrz:       return n;                          /* 0..1           */
+    case oSMode:     return (float)(int)(n * (SPEC_MODE_COUNT - 0.001f));
+    case oSAmt:      return n;                          /* 0..1           */
     }
     return n;
+}
+
+/* glitch param real values */
+static float glitchReal(int idx, float n)
+{
+    if (idx >= GLITCH_BASE && idx < GLITCH_BASE + 16)
+        return (float)(int)(n * (GL_ALGO_COUNT - 0.001f));   /* 0..7 */
+    if (idx == gDiv) return (float)(int)(n * 3.999f);        /* 0..3 */
+    return n;                                                /* gMix */
 }
 
 struct ParamMeta { const char* name; const char* label; float def; };
@@ -109,9 +131,23 @@ static const ParamMeta kLayerMeta[PPL] = {
     { "Deci", "x",    0.00f },   /* -> 1 (off) */
     { "Chaos","%",    0.00f },
     { "TJit", "%",    0.00f },
+    /* wav operators — all default to neutral */
+    { "Strch","x",    0.50f },   /* -> 1.0x */
+    { "Tonal","",     0.50f },   /* -> 0 */
+    { "Tilt", "",     0.50f },   /* -> 0 */
+    { "Shft", "bin",  0.50f },   /* -> 0 */
+    { "Frz",  "%",    0.00f },
+    { "SMode","",     0.00f },   /* -> Off */
+    { "SAmt", "%",    0.50f },
 };
 
 static const char* kModeNames[LOOP_MODE_COUNT] = { "OneShot", "Forward", "Granular" };
+static const char* kSpecNames[SPEC_MODE_COUNT] = {
+    "Off", "Scrm", "Robo", "Whsp", "Hole", "Mirr", "Crsh", "Smr"
+};
+static const char* kGlitchNames[GL_ALGO_COUNT] = {
+    "-", "Stut", "St16", "Rev", "Tape", "Half", "Gate", "Scrm"
+};
 
 /* ---------------------------------------------------------------- state */
 
@@ -160,8 +196,25 @@ struct Plugin {
         lp.decimate      = layerReal(oDeci,      params[base + oDeci]);
         lp.chaos         = layerReal(oChaos,     params[base + oChaos]);
         lp.timeJit       = layerReal(oTimeJit,   params[base + oTimeJit]);
+        lp.strch         = layerReal(oStrch,     params[base + oStrch]);
+        lp.tonal         = layerReal(oTonal,     params[base + oTonal]);
+        lp.tilt          = layerReal(oTilt,      params[base + oTilt]);
+        lp.shiftBins     = (int)layerReal(oShift, params[base + oShift]);
+        lp.freeze        = layerReal(oFrz,       params[base + oFrz]);
+        lp.specMode      = (int)layerReal(oSMode, params[base + oSMode]);
+        lp.specAmt       = layerReal(oSAmt,      params[base + oSAmt]);
         if (lp.loopEnd < lp.loopStart + 0.001f) lp.loopEnd = lp.loopStart + 0.001f;
         return lp;
+    }
+
+    GlitchParams glitchParams() const
+    {
+        GlitchParams gp;
+        for (int i = 0; i < 16; i++)
+            gp.pattern[i] = (int)glitchReal(GLITCH_BASE + i, params[GLITCH_BASE + i]);
+        gp.divIdx = (int)glitchReal(gDiv, params[gDiv]);
+        gp.mix    = params[gMix];
+        return gp;
     }
 
     /* editor -> set a param and let the host record automation */
@@ -234,10 +287,26 @@ static void processReplacing(AEffect* e, float** in, float** out,
     memset(out[0], 0, sizeof(float) * sampleFrames);
     memset(out[1], 0, sizeof(float) * sampleFrames);
 
+    /* pull transport from the host for the tempo-synced glitch engine */
+    if (p->host) {
+        VstTimeInfo* ti = (VstTimeInfo*)p->host(e, audioMasterGetTime, 0,
+                                kVstPpqPosValid | kVstTempoValid, 0, 0);
+        if (ti) {
+            if (ti->flags & kVstTempoValid)  p->engine.hostTempo = ti->tempo;
+            p->engine.hostPpqValid = (ti->flags & kVstPpqPosValid) != 0;
+            if (p->engine.hostPpqValid)      p->engine.hostPpq = ti->ppqPos;
+        } else {
+            p->engine.hostPpqValid = false;
+        }
+    }
+
     LayerParams lp[NUM_LAYERS];
     for (int i = 0; i < NUM_LAYERS; i++) lp[i] = p->layerParams(i);
 
     p->engine.process(out, sampleFrames, lp);
+
+    GlitchParams gp = p->glitchParams();
+    p->engine.processGlitch(out, sampleFrames, gp);
 
     float master = p->params[0];
     if (master != 1.0f)
@@ -286,19 +355,32 @@ static float getParameter(AEffect* e, int32_t index)
 }
 
 /* ------------------------------------------------------------ chunk state
- * Text format, newline-separated: header line, then one path per layer.
- * Sample audio is re-loaded from these paths on preset recall.
+ * Text format, newline-separated:
+ *   SMPL4
+ *   <count> <p0> <p1> ... <pN-1>     all normalized params
+ *   <layer 1 path>  <layer 2 path>  <layer 3 path>   (one per line)
+ *   <seed path>
+ * With effFlagsProgramChunks the host saves ONLY this chunk, so the params
+ * must live here too (SMPL2/3 didn't include them — knob positions were
+ * lost on reload; SMPL4 fixes that and still reads the old formats).
  */
 static std::string buildChunk(Plugin* p)
 {
-    std::string s = "SMPL3\n";
+    std::string s = "SMPL4\n";
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", NUM_PARAMS);
+    s += buf;
+    for (int i = 0; i < NUM_PARAMS; i++) {
+        snprintf(buf, sizeof(buf), " %.6f", p->params[i]);
+        s += buf;
+    }
+    s += "\n";
     for (int i = 0; i < NUM_LAYERS; i++) {
         Sample* smp = p->engine.layers[i].live.load();
         Sample* pnd = p->engine.layers[i].pending.load();
         const std::string& path = pnd ? pnd->path : (smp ? smp->path : std::string());
         s += path; s += "\n";
     }
-    /* trailing line: chaos seed path (blank if none) */
     SeedData* sd = p->engine.seedPending.load();
     if (!sd) sd = p->engine.seedLive.load();
     s += (sd ? sd->path : std::string()); s += "\n";
@@ -310,12 +392,30 @@ static void applyChunk(Plugin* p, const char* data, int len)
     if (!data || len < 5) return;
     std::string s(data, (size_t)len);
     size_t nl = s.find('\n');
-    /* accept SMPL2 (no seed) and SMPL3 (with seed line) */
-    if (nl == std::string::npos ||
-        (s.compare(0, 5, "SMPL3") != 0 && s.compare(0, 5, "SMPL2") != 0))
-        return;
-    bool hasSeed = s.compare(0, 5, "SMPL3") == 0;
+    if (nl == std::string::npos) return;
+    bool v4 = s.compare(0, 5, "SMPL4") == 0;
+    bool v3 = s.compare(0, 5, "SMPL3") == 0;
+    bool v2 = s.compare(0, 5, "SMPL2") == 0;
+    if (!v4 && !v3 && !v2) return;
     size_t pos = nl + 1;
+
+    if (v4) {                                  /* params line */
+        size_t e = s.find('\n', pos);
+        if (e == std::string::npos) e = s.size();
+        std::string line = s.substr(pos, e - pos);
+        const char* c = line.c_str();
+        char* end = nullptr;
+        long count = strtol(c, &end, 10);
+        if (count > NUM_PARAMS) count = NUM_PARAMS;
+        for (long i = 0; i < count && end; i++) {
+            float v = strtof(end, &end);
+            if (v < 0) v = 0;
+            if (v > 1) v = 1;
+            p->params[i] = v;
+        }
+        pos = e + 1;
+    }
+
     for (int i = 0; i < NUM_LAYERS && pos <= s.size(); i++) {
         size_t e = s.find('\n', pos);
         if (e == std::string::npos) e = s.size();
@@ -323,7 +423,7 @@ static void applyChunk(Plugin* p, const char* data, int len)
         if (!path.empty()) p->loadLayer(i, path.c_str());
         pos = e + 1;
     }
-    if (hasSeed && pos <= s.size()) {
+    if ((v4 || v3) && pos <= s.size()) {
         size_t e = s.find('\n', pos);
         if (e == std::string::npos) e = s.size();
         std::string seed = s.substr(pos, e - pos);
@@ -343,13 +443,28 @@ static void copyStr(void* dst, const char* src, size_t max)
 static void paramName(int idx, char* out)
 {
     if (idx == 0) { strcpy(out, "Master"); return; }
+    if (idx >= GLITCH_BASE) {
+        if (idx == gDiv)      strcpy(out, "GDiv");
+        else if (idx == gMix) strcpy(out, "GMix");
+        else snprintf(out, kVstMaxParamStrLen + 1, "St%02d", idx - GLITCH_BASE + 1);
+        return;
+    }
     int layer, off; splitIndex(idx, layer, off);
     snprintf(out, kVstMaxParamStrLen + 1, "L%d %s", layer + 1, kLayerMeta[off].name);
 }
 
+static const char* kDivNames[4] = { "1/32", "1/16", "1/8", "1/4" };
+
 static void paramDisplay(Plugin* p, int idx, char* out)
 {
     if (idx == 0) { snprintf(out, 16, "%d", (int)(p->params[0] * 100 + 0.5f)); return; }
+    if (idx >= GLITCH_BASE) {
+        float v = glitchReal(idx, p->params[idx]);
+        if (idx == gDiv)      snprintf(out, 16, "%s", kDivNames[(int)v & 3]);
+        else if (idx == gMix) snprintf(out, 16, "%d", (int)(v * 100 + 0.5f));
+        else                  snprintf(out, 16, "%s", kGlitchNames[(int)v % GL_ALGO_COUNT]);
+        return;
+    }
     int layer, off; splitIndex(idx, layer, off);
     float v = layerReal(off, p->params[idx]);
     switch (off) {
@@ -362,12 +477,19 @@ static void paramDisplay(Plugin* p, int idx, char* out)
     case oShape:
     case oChaos:
     case oTimeJit: snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); break;
-    case oScan:    snprintf(out, 16, "%+d", (int)(v * 100)); break;
+    case oScan:
+    case oTonal:
+    case oTilt:    snprintf(out, 16, "%+d", (int)(v * 100)); break;
     case oTune:    snprintf(out, 16, "%+d", (int)v); break;
     case oMode:    snprintf(out, 16, "%s", kModeNames[(int)v & 3]); break;
     case oPlay:    snprintf(out, 16, "%s", v >= 0.5f ? "Start" : "Loop"); break;
     case oBits:    snprintf(out, 16, "%d", (int)(v + 0.5f)); break;
     case oDeci:    snprintf(out, 16, "%dx", (int)(v + 0.5f)); break;
+    case oStrch:   snprintf(out, 16, "%.2fx", v); break;
+    case oShift:   snprintf(out, 16, "%+d", (int)v); break;
+    case oFrz:
+    case oSAmt:    snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); break;
+    case oSMode:   snprintf(out, 16, "%s", kSpecNames[(int)v % SPEC_MODE_COUNT]); break;
     default:       if (v >= 100.0f) snprintf(out, 16, "%d", (int)(v + 0.5f));
                    else snprintf(out, 16, "%.1f", v);
     }
@@ -406,8 +528,14 @@ static intptr_t dispatcher(AEffect* e, int32_t opcode, int32_t index,
             copyStr(ptr, n, kVstMaxParamStrLen + 1); }
         return 0;
     case effGetParamLabel:
-        if (index >= 0 && index < NUM_PARAMS) { int l, o; splitIndex(index, l, o);
-            copyStr(ptr, index == 0 ? "%" : kLayerMeta[o].label, kVstMaxParamStrLen + 1); }
+        if (index >= 0 && index < NUM_PARAMS) {
+            int l, o; splitIndex(index, l, o);
+            const char* lbl = "";
+            if (index == 0)      lbl = "%";
+            else if (o >= 0)     lbl = kLayerMeta[o].label;
+            else if (index == gMix) lbl = "%";     /* glitch: steps/div unitless */
+            copyStr(ptr, lbl, kVstMaxParamStrLen + 1);
+        }
         return 0;
     case effGetParamDisplay:
         if (index >= 0 && index < NUM_PARAMS) { char d[16]; paramDisplay(p, index, d);
@@ -462,6 +590,9 @@ AEffect* VSTPluginMain(audioMasterCallback host)
     for (int l = 0; l < NUM_LAYERS; l++)
         for (int o = 0; o < PPL; o++)
             p->params[1 + l * PPL + o] = kLayerMeta[o].def;
+    for (int i = 0; i < 16; i++) p->params[GLITCH_BASE + i] = 0.0f;  /* steps off */
+    p->params[gDiv] = 0.375f;                     /* 1/16 */
+    p->params[gMix] = 1.00f;
 
     e->magic            = kEffectMagic;
     e->dispatcher       = dispatcher;

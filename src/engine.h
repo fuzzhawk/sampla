@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 #include "wav.h"
+#include "fft.h"
 
 static const float ENG_TWO_PI = 6.28318530717958647692f;
 
@@ -96,6 +97,34 @@ struct LayerParams {
     float decimate  = 1.0f; /* sample-and-hold factor 1..50         */
     float chaos     = 0.0f; /* seed-driven bit rearrange 0..1       */
     float timeJit   = 0.0f; /* grain spawn-time jitter 0..1         */
+
+    /* ---- wav operators (milestone 4) ---- */
+    float strch     = 1.0f; /* time-stretch 0.25..4 (1 = off), pitch-preserving */
+    float tonal     = 0.0f; /* spectral tonal/atonal balance -1..+1  */
+    float tilt      = 0.0f; /* spectral tilt dark/bright -1..+1      */
+    int   shiftBins = 0;    /* spectral shift, -64..+64 bins         */
+    float freeze    = 0.0f; /* spectral magnitude freeze 0..1        */
+    int   specMode  = 0;    /* chaotic spectral artifact mode 0..7   */
+    float specAmt   = 0.5f; /* intensity of specMode                 */
+};
+
+/* spectral artifact modes (specMode) */
+enum {
+    SPEC_OFF = 0, SPEC_SCRAMBLE, SPEC_ROBOT, SPEC_WHISPER,
+    SPEC_HOLES, SPEC_MIRROR, SPEC_CRUSH, SPEC_SMEAR, SPEC_MODE_COUNT
+};
+
+/* glitch sequencer algorithms (per step) */
+enum {
+    GL_OFF = 0, GL_STUTTER, GL_STUT16, GL_REVERSE, GL_TAPESTOP,
+    GL_HALF, GL_GATE, GL_SCRAMBLE, GL_ALGO_COUNT
+};
+
+/* per-block glitch sequencer settings, built from the flat VST params */
+struct GlitchParams {
+    int   pattern[16] = {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0};
+    int   divIdx = 1;       /* 0=1/32 1=1/16 2=1/8 3=1/4 */
+    float mix = 1.0f;
 };
 
 /* ADSR stages */
@@ -133,6 +162,35 @@ struct Layer {
     int    holdCnt = 0;
     uint32_t chaosIdx = 0;
 
+    /* stretch-stream state (grain-based time stretch in Forward/OneShot) */
+    double vpos = 0;        /* slow virtual playhead                */
+    int    stretchCount = 0;/* output samples since last grain      */
+
+    /* streaming STFT state, one per channel (spectral wav operators) */
+    static const int SPEC_N = 1024, SPEC_HOP = 256, SPEC_BINS = 513;
+    struct SpecCh {
+        float inRing[SPEC_N];
+        float ola[SPEC_N + SPEC_HOP];
+        float prevMag[SPEC_BINS];
+        float smearMag[SPEC_BINS];
+        int   inPos = 0, olaRead = 0, hopCount = 0;
+    };
+    SpecCh spec[2];
+    uint32_t specFrame = 0;
+    bool specWasActive = false;
+
+    void resetSpectral()
+    {
+        for (int c = 0; c < 2; c++) {
+            memset(spec[c].inRing, 0, sizeof(spec[c].inRing));
+            memset(spec[c].ola, 0, sizeof(spec[c].ola));
+            memset(spec[c].prevMag, 0, sizeof(spec[c].prevMag));
+            memset(spec[c].smearMag, 0, sizeof(spec[c].smearMag));
+            spec[c].inPos = spec[c].olaRead = spec[c].hopCount = 0;
+        }
+        specFrame = 0;
+    }
+
     std::atomic<float> playhead{0.0f};    /* 0..1 for the GUI              */
 
     float randf()
@@ -165,6 +223,7 @@ struct Layer {
     void resetPlayback()
     {
         pos = 0; inLoop = false; grainAccum = 0; scanPhase = 0; holdCnt = 0;
+        vpos = 0; stretchCount = 0;
         for (Grain& g : grains) g.active = false;
     }
 
@@ -192,6 +251,32 @@ public:
     std::atomic<SeedData*> seedLive{nullptr};
     std::atomic<SeedData*> seedPending{nullptr};
     SeedData* seedRetire = nullptr;
+
+    /* host transport, fed by the plugin each block before process() */
+    double hostTempo = 130.0;
+    double hostPpq = 0.0;
+    bool   hostPpqValid = false;
+
+    /* ---- glitch sequencer state ---- */
+    static const int GL_RING = 1 << 17;         /* ~3 s capture ring    */
+    static const int GL_SNAP = 1 << 16;         /* max one-step snapshot */
+    std::vector<float> glRingL, glRingR, glSnapL, glSnapR;
+    int    glWrite = 0;
+    long   glTotalWritten = 0;
+    long   glCurStep = -1000000;                /* absolute step number  */
+    int    glSnapLen = 0;
+    int    glAlgo = GL_OFF;
+    long   glSampleInStep = 0;
+    double glTapePos = 0;
+    float  glGateEnv = 1.0f;
+    double glInternalPpq = 0;                   /* fallback clock        */
+    std::atomic<int> glitchStep{-1};            /* for the GUI highlight */
+
+    Engine()
+    {
+        glRingL.assign(GL_RING, 0.0f); glRingR.assign(GL_RING, 0.0f);
+        glSnapL.assign(GL_SNAP, 0.0f); glSnapR.assign(GL_SNAP, 0.0f);
+    }
 
     ~Engine()
     {
@@ -228,6 +313,127 @@ public:
         float* outR = outLR[1];
         for (int i = 0; i < NLAYERS; i++)
             renderLayer(layers[i], lp[i], outL, outR, frames, seed);
+    }
+
+    /* ---- tempo-synced glitch sequencer, applied to the summed bus ----
+     *
+     * A 16-step pattern advances in sync with the host transport (ppqPos when
+     * the DAW provides it, an internal clock at the host tempo otherwise).
+     * At each step boundary the previous step's audio is snapshotted from a
+     * capture ring; the step's algorithm then rearranges that snapshot in
+     * real time (stutters, reverse, tapestop, half-speed, chaos-seeded slice
+     * scramble) or trance-gates the live signal. */
+    void processGlitch(float** outLR, int frames, const GlitchParams& gp)
+    {
+        float* outL = outLR[0];
+        float* outR = outLR[1];
+        SeedData* seed = seedLive.load();
+
+        double tempo = hostTempo > 20.0 && hostTempo < 999.0 ? hostTempo : 130.0;
+        static const double kStepPPQ[4] = { 0.125, 0.25, 0.5, 1.0 };
+        double stepPPQ = kStepPPQ[gp.divIdx & 3];
+        double stepSamples = stepPPQ * (60.0 / tempo) * sampleRate;
+        if (stepSamples < 16) stepSamples = 16;
+        double ppqPerSample = tempo / 60.0 / sampleRate;
+
+        for (int i = 0; i < frames; i++) {
+            double ppq;
+            if (hostPpqValid) ppq = hostPpq + (double)i * ppqPerSample;
+            else { ppq = glInternalPpq; glInternalPpq += ppqPerSample; }
+            if (ppq < 0) ppq = 0;
+
+            long stepAbs = (long)(ppq / stepPPQ);
+            if (stepAbs != glCurStep) {
+                glCurStep = stepAbs;
+                int idx16 = (int)(stepAbs % 16);
+                glitchStep.store(idx16);
+                glAlgo = gp.pattern[idx16];
+                glSampleInStep = 0;
+                glTapePos = 0;
+                /* snapshot the previous step from the capture ring */
+                int n = (int)stepSamples;
+                if (n > GL_SNAP) n = GL_SNAP;
+                if ((long)n > glTotalWritten) n = (int)glTotalWritten;
+                glSnapLen = n;
+                for (int j = 0; j < n; j++) {
+                    int src = (glWrite - n + j) & (GL_RING - 1);
+                    glSnapL[j] = glRingL[src];
+                    glSnapR[j] = glRingR[src];
+                }
+            }
+
+            float dl = outL[i], dr = outR[i];
+
+            /* always capture dry into the ring */
+            glRingL[glWrite] = dl; glRingR[glWrite] = dr;
+            glWrite = (glWrite + 1) & (GL_RING - 1);
+            glTotalWritten++;
+
+            float wl = dl, wr = dr;
+            long s = glSampleInStep++;
+            int n = glSnapLen;
+
+            if (glAlgo != GL_OFF && (n > 15 || glAlgo == GL_GATE)) {
+                switch (glAlgo) {
+                case GL_STUTTER: {
+                    int seg = n / 2 > 0 ? n / 2 : 1;
+                    int r = (int)(s % seg);
+                    wl = glSnapL[r]; wr = glSnapR[r];
+                    break;
+                }
+                case GL_STUT16: {
+                    int seg = n / 4 > 0 ? n / 4 : 1;
+                    int r = (int)(s % seg);
+                    wl = glSnapL[r]; wr = glSnapR[r];
+                    break;
+                }
+                case GL_REVERSE: {
+                    int r = n - 1 - (int)(s % n);
+                    wl = glSnapL[r]; wr = glSnapR[r];
+                    break;
+                }
+                case GL_TAPESTOP: {
+                    double rate = 1.0 - (double)s / stepSamples;
+                    if (rate < 0) rate = 0;
+                    glTapePos += rate;
+                    int r = (int)glTapePos; if (r >= n) r = n - 1;
+                    float fade = (float)(rate * 0.3 + 0.7);
+                    wl = glSnapL[r] * fade; wr = glSnapR[r] * fade;
+                    break;
+                }
+                case GL_HALF: {
+                    int r = (int)((s / 2) % n);
+                    wl = glSnapL[r]; wr = glSnapR[r];
+                    break;
+                }
+                case GL_GATE: {
+                    double sub = fmod((double)s * 4.0 / stepSamples, 1.0);
+                    float target = sub < 0.55 ? 1.0f : 0.0f;
+                    glGateEnv += (target - glGateEnv) * 0.03f;
+                    wl = dl * glGateEnv; wr = dr * glGateEnv;
+                    break;
+                }
+                case GL_SCRAMBLE: {
+                    int sliceLen = n / 8 > 0 ? n / 8 : 1;
+                    int sN = (int)(s % n);
+                    int sl_ = sN / sliceLen; if (sl_ > 7) sl_ = 7;
+                    uint32_t v = seedValue(seed, (uint32_t)(glCurStep * 16 + sl_));
+                    int src = (int)(v % 8u);
+                    int r = src * sliceLen + (sN % sliceLen);
+                    if (r >= n) r = n - 1;
+                    wl = glSnapL[r]; wr = glSnapR[r];
+                    break;
+                }
+                }
+                outL[i] = dl + (wl - dl) * gp.mix;
+                outR[i] = dr + (wr - dr) * gp.mix;
+            } else {
+                glGateEnv = 1.0f;
+            }
+        }
+
+        if (hostPpqValid)
+            hostPpq += (double)frames * ppqPerSample;  /* until next block */
     }
 
 private:
@@ -275,25 +481,39 @@ private:
         double spawnPerSample = (double)lp.density / sampleRate;
         double scanStep = (double)lp.scan * 2.0 / sampleRate;   /* up to 2 sweeps/s */
 
+        /* spectral wav operators: engage only when non-neutral; reset the
+         * STFT state on the rising edge so stale buffers don't burp */
+        bool specActive = lp.specMode != SPEC_OFF ||
+                          fabsf(lp.tonal) > 0.01f || fabsf(lp.tilt) > 0.01f ||
+                          lp.shiftBins != 0 || lp.freeze > 0.01f;
+        if (specActive && !L.specWasActive) L.resetSpectral();
+        L.specWasActive = specActive;
+
         for (int i = 0; i < frames; i++) {
             /* ---- amplitude ADSR ---- */
             advanceEnv(L, lp, attStep, decStep, relStep);
-            if (L.stage == ENV_IDLE) break;
-            float amp = L.env * lp.volume;
+            bool voiceOn = L.stage != ENV_IDLE;
+            if (!voiceOn && !specActive) break;
+            float amp = voiceOn ? L.env * lp.volume : 0.0f;
 
             float sl = 0, sr = 0;
 
-            if (lp.mode == LOOP_GRANULAR) {
-                renderGranular(L, lp, s, ls, le, pitchInc, grainLenF,
-                               spawnPerSample, scanStep, sl, sr);
-            } else {
-                renderSample(L, lp, s, ls, le, overlap, pitchInc, sl, sr);
+            if (voiceOn) {
+                if (lp.mode == LOOP_GRANULAR) {
+                    renderGranular(L, lp, s, ls, le, pitchInc, grainLenF,
+                                   spawnPerSample, scanStep, sl, sr);
+                } else {
+                    renderSample(L, lp, s, ls, le, overlap, pitchInc, sl, sr);
+                }
+                mangle(L, lp, seed, sl, sr);  /* decimate -> bitcrush -> chaos */
+                sl *= amp; sr *= amp;
             }
 
-            mangle(L, lp, seed, sl, sr);    /* decimate -> bitcrush -> chaos */
+            /* spectral runs even after the voice ends so its tail flushes */
+            if (specActive) processSpectral(L, lp, seed, sl, sr);
 
-            outL[i] += sl * amp;
-            outR[i] += sr * amp;
+            outL[i] += sl;
+            outR[i] += sr;
         }
 
         /* report a playhead position for the GUI */
@@ -334,6 +554,175 @@ private:
         uint32_t v = base ^ (idx * 2246822519u);
         v ^= v << 13; v ^= v >> 17; v ^= v << 5;
         return v;
+    }
+
+    /* ---- spectral wav operators (streaming STFT, N=1024 hop=256) ----
+     * Chain per frame: tonal/atonal balance -> tilt -> bin shift -> freeze
+     * -> chaotic artifact mode. Runs per channel; ~17 ms latency. */
+    void processSpectral(Layer& L, const LayerParams& lp, SeedData* seed,
+                         float& sl, float& sr)
+    {
+        float in[2] = { sl, sr };
+        float out[2];
+        for (int c = 0; c < 2; c++) {
+            Layer::SpecCh& S = L.spec[c];
+            S.inRing[S.inPos] = in[c];
+            S.inPos = (S.inPos + 1) & (Layer::SPEC_N - 1);
+            out[c] = S.ola[S.olaRead];
+            S.ola[S.olaRead] = 0.0f;
+            S.olaRead = (S.olaRead + 1) % (Layer::SPEC_N + Layer::SPEC_HOP);
+            if (++S.hopCount >= Layer::SPEC_HOP) {
+                S.hopCount = 0;
+                specFrame(L, S, lp, seed);
+            }
+        }
+        L.specFrame++;   /* advances 2x per sample; only relative value matters */
+        sl = out[0]; sr = out[1];
+    }
+
+    static const float* hannTable()
+    {
+        static float w[Layer::SPEC_N];
+        static bool init = false;
+        if (!init) {
+            for (int n = 0; n < Layer::SPEC_N; n++)
+                w[n] = 0.5f - 0.5f * cosf(ENG_TWO_PI * n / Layer::SPEC_N);
+            init = true;
+        }
+        return w;
+    }
+
+    void specFrame(Layer& L, Layer::SpecCh& S, const LayerParams& lp,
+                   SeedData* seed)
+    {
+        const int N = Layer::SPEC_N, HALF = N / 2;
+        const float* w = hannTable();
+        float re[Layer::SPEC_N], im[Layer::SPEC_N];
+        for (int n = 0; n < N; n++) {
+            re[n] = S.inRing[(S.inPos + n) & (N - 1)] * w[n];
+            im[n] = 0.0f;
+        }
+        fft_radix2(re, im, N, 0);
+
+        float mag[Layer::SPEC_BINS], ph[Layer::SPEC_BINS];
+        for (int k = 0; k <= HALF; k++) {
+            mag[k] = sqrtf(re[k] * re[k] + im[k] * im[k]);
+            ph[k]  = atan2f(im[k], re[k]);
+        }
+
+        /* tonal/atonal balance: peaks (above 2x mean) vs residual */
+        if (fabsf(lp.tonal) > 0.01f) {
+            float mean = 0;
+            for (int k = 1; k <= HALF; k++) mean += mag[k];
+            mean /= HALF;
+            float thr = 2.0f * mean;
+            for (int k = 1; k <= HALF; k++) {
+                bool peak = mag[k] > thr;
+                if (lp.tonal > 0 && !peak) mag[k] *= 1.0f - lp.tonal;
+                if (lp.tonal < 0 &&  peak) mag[k] *= 1.0f + lp.tonal;
+            }
+        }
+
+        /* spectral tilt: dark (<0) .. bright (>0), +/-24 dB across */
+        if (fabsf(lp.tilt) > 0.01f) {
+            for (int k = 1; k <= HALF; k++) {
+                float x = (float)k / HALF - 0.5f;
+                mag[k] *= powf(10.0f, lp.tilt * x * 2.4f);
+            }
+        }
+
+        /* bin shift (inharmonic frequency shift) */
+        if (lp.shiftBins != 0) {
+            float m2[Layer::SPEC_BINS], p2[Layer::SPEC_BINS];
+            for (int k = 0; k <= HALF; k++) { m2[k] = 0; p2[k] = 0; }
+            for (int k = 0; k <= HALF; k++) {
+                int d = k + lp.shiftBins;
+                if (d >= 0 && d <= HALF) { m2[d] = mag[k]; p2[d] = ph[k]; }
+            }
+            memcpy(mag, m2, sizeof(m2)); memcpy(ph, p2, sizeof(p2));
+        }
+
+        /* magnitude freeze (phases keep running -> shimmer) */
+        if (lp.freeze > 0.01f) {
+            for (int k = 0; k <= HALF; k++) {
+                mag[k] = mag[k] * (1.0f - lp.freeze) + S.prevMag[k] * lp.freeze;
+            }
+        }
+        memcpy(S.prevMag, mag, sizeof(float) * Layer::SPEC_BINS);
+
+        /* chaotic artifact modes, seed-steered where random */
+        float a = lp.specAmt;
+        uint32_t fr = L.specFrame;
+        switch (lp.specMode) {
+        case SPEC_SCRAMBLE:
+            for (int k = 1; k < HALF; k++) {
+                uint32_t v = seedValue(seed, fr * 7919u + k);
+                if ((v & 1023u) < (uint32_t)(a * 300.0f)) {
+                    int j = 1 + (int)((v >> 10) % (uint32_t)(HALF - 1));
+                    float t = mag[k]; mag[k] = mag[j]; mag[j] = t;
+                }
+            }
+            break;
+        case SPEC_ROBOT:
+            for (int k = 0; k <= HALF; k++) ph[k] *= 1.0f - a;
+            break;
+        case SPEC_WHISPER:
+            for (int k = 1; k <= HALF; k++) {
+                float rp = (seedValue(seed, fr * 4099u + k) & 0xFFFF)
+                           * (ENG_TWO_PI / 65536.0f);
+                ph[k] += (rp - ph[k]) * a;
+            }
+            break;
+        case SPEC_HOLES:
+            for (int k = 1; k <= HALF; k++) {
+                uint32_t v = seedValue(seed, (fr / 4u) * 613u + k);
+                if ((v & 1023u) < (uint32_t)(a * 512.0f)) mag[k] = 0.0f;
+            }
+            break;
+        case SPEC_MIRROR:
+            for (int k = 1; k < HALF / 2; k++) {
+                int j = HALF - k;
+                float mk = mag[k], mj = mag[j];
+                mag[k] += (mj - mk) * a;
+                mag[j] += (mk - mj) * a;
+            }
+            break;
+        case SPEC_CRUSH: {
+            float inv = 2.0f + (1.0f - a) * 62.0f;
+            float peak = 1e-9f;
+            for (int k = 1; k <= HALF; k++) if (mag[k] > peak) peak = mag[k];
+            for (int k = 1; k <= HALF; k++)
+                mag[k] = floorf(mag[k] / peak * inv + 0.5f) / inv * peak;
+            break;
+        }
+        case SPEC_SMEAR: {
+            float decay = 0.55f + 0.43f * a;
+            for (int k = 0; k <= HALF; k++) {
+                float sm = S.smearMag[k] * decay;
+                if (mag[k] > sm) sm = mag[k];
+                S.smearMag[k] = sm;
+                mag[k] = sm;
+            }
+            break;
+        }
+        default: break;
+        }
+
+        /* back to complex, enforce conjugate symmetry, inverse, overlap-add */
+        for (int k = 0; k <= HALF; k++) {
+            re[k] = mag[k] * cosf(ph[k]);
+            im[k] = mag[k] * sinf(ph[k]);
+        }
+        im[0] = 0; im[HALF] = 0;
+        for (int k = 1; k < HALF; k++) { re[N - k] = re[k]; im[N - k] = -im[k]; }
+        fft_radix2(re, im, N, 1);
+
+        const float norm = 1.0f / 1.5f;   /* Hann^2 OLA at hop N/4 sums to 1.5 */
+        int base = S.olaRead;
+        for (int n = 0; n < N; n++) {
+            int j = (base + n) % (N + Layer::SPEC_HOP);
+            S.ola[j] += re[n] * w[n] * norm;
+        }
     }
 
     /* Rotate + partially XOR the 16-bit word of a sample: "chaotic bit
@@ -385,6 +774,11 @@ private:
                       double ls, double le, double overlap,
                       double inc, float& outL, float& outR)
     {
+        if (lp.strch < 0.97f || lp.strch > 1.03f) {
+            renderStretched(L, lp, s, ls, le, inc, outL, outR);
+            return;
+        }
+
         if (!L.inLoop) {                       /* first sample: seed position */
             L.pos = lp.playFromStart ? 0.0 : ls;
             L.inLoop = true;
@@ -412,6 +806,53 @@ private:
         }
         L.pos += inc;
         if (L.pos >= le) L.pos = ls + overlap + (L.pos - le);
+    }
+
+    /* Pitch-preserving time stretch for OneShot/Forward: a slow virtual
+     * playhead (vpos) advances at inc/strch while fixed-rate Hann grains
+     * (50% overlap, so they sum to constant power) read from it at the
+     * normal pitch. Twice the Strch = twice the duration, same pitch. */
+    void renderStretched(Layer& L, const LayerParams& lp, Sample* s,
+                         double ls, double le, double inc,
+                         float& outL, float& outR)
+    {
+        static const int GLEN = 2048, GHOP = 1024;   /* output samples */
+
+        if (!L.inLoop) {
+            L.vpos = lp.playFromStart ? 0.0 : ls;
+            L.inLoop = true;
+            L.stretchCount = GHOP;                   /* spawn immediately */
+        }
+
+        if (L.stretchCount >= GHOP) {
+            L.stretchCount = 0;
+            for (Grain& g : L.grains) {
+                if (g.active) continue;
+                g.pos = L.vpos; g.inc = inc; g.age = 0; g.len = GLEN;
+                g.panL = g.panR = 1.0f; g.shape = 0.5f; g.active = true;
+                break;
+            }
+        }
+        L.stretchCount++;
+
+        float mixL = 0, mixR = 0;
+        for (Grain& g : L.grains) {
+            if (!g.active) continue;
+            float w = grainWindow(g);
+            float gl, gr; readFrame(s, g.pos, gl, gr);
+            mixL += gl * w; mixR += gr * w;
+            g.pos += g.inc;
+            if (++g.age >= g.len || g.pos >= s->frames - 1) g.active = false;
+        }
+        outL = mixL; outR = mixR;
+
+        L.vpos += inc / lp.strch;
+        if (lp.mode == LOOP_ONESHOT) {
+            if (L.vpos >= s->frames - 1) { L.vpos = s->frames - 1; L.stage = ENV_RELEASE; }
+        } else if (L.vpos >= le) {
+            L.vpos = ls + (L.vpos - le);             /* grains blend the seam */
+        }
+        L.pos = L.vpos;                              /* playhead for the GUI */
     }
 
     /* Granular cloud over [ls,le] with the experimental controls: a scanning
