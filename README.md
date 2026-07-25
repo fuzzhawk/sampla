@@ -59,11 +59,32 @@ region; the selected sounds become the *style* for two generators:
 Both re-roll a new deterministic seed each press, audition immediately, and
 export via **EXP SYNTH** / **EXP NN**.
 
-### Neural sampler (RAVE via ONNX Runtime)
+### Neural sampler — two backends
+
+`GENERATE NN` picks the best model present:
+
+1. **Spectral VAE (RTNeural-format, primary, no runtime dependency).** A small
+   variational autoencoder **you train on your own samples** — learns a
+   manifold of real log-magnitude STFT frames, so generation draws plausible
+   spectra instead of the averaging synth's mush. Weights load from
+   `nnvae.json` (a plain Dense stack in the RTNeural JSON format, parsed with
+   the vendored nlohmann/json and run directly — **header-only, nothing extra
+   to ship**). Reconstruction is Griffin-Lim. Trains on **CPU in minutes, no
+   GPU** — the whole reason it exists alongside RAVE.
+   - **Train it:** Actions tab -> `train-vae` -> paste a URL to a `.zip` of
+     one-shots (a Release asset, <= 2 GB) -> download the `nnvae-model`
+     artifact -> drop `nnvae.json` next to the plugin DLL. See
+     `tools/train_vae.py`. A few hundred coherent one-shots is plenty; tighter
+     and more coherent beats bigger.
+   - Knobs: **NLen** (length), **Chaos** (latent temperature/drift), **Morph**
+     (blend a lassoed library sound's latent in as a seed), **Sprd** (random
+     pitch spread). Status reads `NN: VAE` when loaded.
+
+2. **RAVE via ONNX Runtime (fallback, higher-fidelity, needs a GPU to train).**
 
 The spectral synth averages spectra, so it tends toward the same muddy wash;
-the neural engine learns the *joint* time/frequency/phase structure, so its
-one-shots keep transients and character. It runs a pretrained
+the neural engines learn structure, so their one-shots keep character. RAVE
+runs a pretrained
 [RAVE](https://github.com/acids-ircam/RAVE) model through **ONNX Runtime**,
 which is **loaded dynamically at runtime** — the plugin has no link-time
 dependency on it and runs fine without it (the NN panel just shows

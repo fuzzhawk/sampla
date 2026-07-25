@@ -13,6 +13,7 @@
 #include "vst2.h"
 #include "librarian.h"
 #include "neural.h"
+#include "nnsynth.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -100,7 +101,11 @@ struct Plugin {
     std::vector<float> synthBuf;           /* last synthesized one-shot  */
     uint32_t synthSeed = 0x5EED0001u;
 
-    /* neural sampler (GUI thread only) */
+    /* neural sampler (GUI thread only). Two backends: the RTNeural-format
+     * spectral VAE (nnvae.json, header-only, primary) and the ONNX/RAVE path
+     * (dormant fallback). VAE wins when its model is present. */
+    VaeSynth vae;
+    bool vaeTried = false;
     NeuralEngine neural;
     bool neuralTried = false;
     std::string neuralDir;                 /* override for tests; else DLL dir */
@@ -358,6 +363,20 @@ struct Plugin {
         return false;
     }
 
+    bool ensureVae()
+    {
+        if (vae.ready) return true;
+        if (vaeTried) return false;
+        vaeTried = true;
+        std::string dir = neuralDir.empty() ? g_moduleDir : neuralDir;
+        if (vae.load(dir)) {
+            logf("neural: VAE model loaded (%d Hz, dir %s)", vae.sr, dir.c_str());
+            return true;
+        }
+        logf("neural: no VAE - %s", vae.err.c_str());
+        return false;
+    }
+
     /* load a file as mono at the model's sample rate */
     static std::vector<float> loadMonoAtRate(const std::string& path, int rate,
                                              float maxSec)
@@ -384,9 +403,65 @@ struct Plugin {
         return out;
     }
 
+    /* publish a mono one-shot to the audition voice as stereo */
+    void publishNeural(const std::vector<float>& mono, int rate)
+    {
+        neuralBuf.resize(mono.size() * 2);
+        for (size_t i = 0; i < mono.size(); i++) {
+            neuralBuf[i * 2] = mono[i]; neuralBuf[i * 2 + 1] = mono[i];
+        }
+        neuralRate = rate;
+        LoadedBuf* b = new LoadedBuf();
+        b->data = neuralBuf;
+        b->frames = (int)mono.size();
+        b->rate = rate;
+        engine.aud.publish(b);
+        engine.auditionStart();
+        logf("neural: %.2fs one-shot - playing", mono.size() / (float)rate);
+    }
+
+    /* primary path: RTNeural-format spectral VAE. Generates a one-shot in the
+     * trained style; a lassoed sound (with Morph > 0) seeds the latent. */
+    bool vaeGenerate()
+    {
+        float lenSec = paramReal(pNLen, params[pNLen]);
+        float chaos  = paramReal(pNChaos, params[pNChaos]);
+        float morph  = paramReal(pNMorph, params[pNMorph]);
+        float spread = paramReal(pNSpread, params[pNSpread]);
+
+        std::vector<float> style;
+        const std::vector<float>* stylePtr = nullptr;
+        LibIndex* ix = indexLive.load();
+        if (morph > 0.001f && ix && !lassoSel.empty()) {
+            uint32_t r = neuralSeed;
+            r = r * 1664525u + 1013904223u;
+            int fa = lassoSel[(r >> 8) % lassoSel.size()];
+            style = loadMonoAtRate(ix->files[fa].path, vae.sr, 4.0f);
+            if (style.size() >= 1024) stylePtr = &style;
+        }
+
+        logf("neural(VAE): %.1fs, chaos %d%%, morph %d%%, spread %.0fst, seed %08X",
+             lenSec, (int)(chaos * 100), (int)(morph * 100), spread, neuralSeed);
+        std::vector<float> mono;
+        if (!vae.generate(lenSec, chaos, morph, spread, neuralSeed, stylePtr, mono)) {
+            logf("neural(VAE): generate failed"); return false;
+        }
+        neuralSeed = neuralSeed * 1664525u + 1013904223u;
+        publishNeural(mono, vae.sr);
+        return true;
+    }
+
+    /* top-level GENERATE NN: prefer the VAE, fall back to ONNX/RAVE */
     bool neuralGenerate()
     {
-        if (!ensureNeural()) return false;
+        if (ensureVae())     return vaeGenerate();
+        if (ensureNeural())  return onnxGenerate();
+        logf("neural: install nnvae.json (train workflow) or a RAVE model");
+        return false;
+    }
+
+    bool onnxGenerate()
+    {
         LibIndex* ix = indexLive.load();
         if (!ix || lassoSel.empty()) { logf("neural: lasso a region first"); return false; }
 

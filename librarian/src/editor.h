@@ -386,11 +386,15 @@ static void paintEditor(HWND hwnd, EditorState* st)
         drawKnob(dc, kp.cx, kp.cy, p->params[kp.param], kp.label, val);
     }
     char nnStat[64];
-    if (p->neural.ready)
-        snprintf(nnStat, sizeof(nnStat), "NN: ready %dHz", p->neural.modelRate);
+    bool nnReady = p->vae.ready || p->neural.ready;
+    if (p->vae.ready)
+        snprintf(nnStat, sizeof(nnStat), "NN: VAE %dHz", p->vae.sr);
+    else if (p->neural.ready)
+        snprintf(nnStat, sizeof(nnStat), "NN: RAVE %dHz", p->neural.modelRate);
     else
-        snprintf(nnStat, sizeof(nnStat), "NN: %s", p->neuralTried ? "absent" : "idle");
-    SetTextColor(dc, p->neural.ready ? RGB(150, 220, 160) : RGB(150, 156, 170));
+        snprintf(nnStat, sizeof(nnStat), "NN: %s",
+                 (p->vaeTried || p->neuralTried) ? "absent" : "idle");
+    SetTextColor(dc, nnReady ? RGB(150, 220, 160) : RGB(150, 156, 170));
     TextOutA(dc, 828, SYN_Y + 12, nnStat, (int)strlen(nnStat));
 
     /* layer controls */

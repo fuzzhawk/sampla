@@ -18,3 +18,14 @@ The ONNX Runtime C API header, vendored from
 The runtime library itself (`onnxruntime.dll` on Windows,
 `libonnxruntime.so` in CI) is **not** vendored; it is downloaded from the
 official ONNX Runtime releases where needed.
+
+## json.hpp
+
+nlohmann/json single-header, v3.11.3, unmodified.
+
+- License: **MIT** (Copyright (c) 2013-2023 Niels Lohmann).
+- Used by `librarian/src/nnsynth.h` to parse the RTNeural-format weight JSON
+  (`nnvae.json`) produced by `tools/train_vae.py`. It is the same JSON parser
+  the RTNeural library itself uses, so the exported model is portable to
+  RTNeural; here the small Dense stack is run directly (header-only, no
+  runtime library to ship).
