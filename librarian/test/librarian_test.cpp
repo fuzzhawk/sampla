@@ -290,12 +290,14 @@ int main()
           VaeSynth v;
           CHECK(v.load("build/nnvae"), "vae: RTNeural-format model loads");
           if (v.ready) {
+              GenParams gp; gp.lengthSec = 1.0f; gp.chaos = 0.4f; gp.seed = 42;
               std::vector<float> g1, g2, g3, gLong;
-              CHECK(v.generate(1.0f, 0.4f, 0.0f, 0.0f, 42, nullptr, g1),
-                    "vae: generate runs (no style)");
-              v.generate(1.0f, 0.4f, 0.0f, 0.0f, 42, nullptr, g2);
-              v.generate(1.0f, 0.4f, 0.0f, 0.0f, 77, nullptr, g3);
-              v.generate(2.5f, 0.4f, 0.0f, 0.0f, 42, nullptr, gLong);
+              CHECK(v.generate(gp, nullptr, g1), "vae: generate runs (no style)");
+              v.generate(gp, nullptr, g2);
+              GenParams gp3 = gp; gp3.seed = 77;
+              v.generate(gp3, nullptr, g3);
+              GenParams gpL = gp; gpL.lengthSec = 2.5f;
+              v.generate(gpL, nullptr, gLong);
               bool fin = true; double e = 0;
               for (float x : g1) { if (!std::isfinite(x)) fin = false; e += fabs(x); }
               CHECK(fin, "vae: output finite");
@@ -303,15 +305,32 @@ int main()
               CHECK(g1 == g2, "vae: deterministic per seed");
               CHECK(g1 != g3, "vae: seed varies output");
               CHECK(gLong.size() > g1.size() * 2, "vae: Length scales output");
-              /* style-conditioned path (encoder) stays finite */
+
+              /* sculpt controls: every shape + key/tone/motion/focus stay finite,
+               * and the shapes actually differ from each other */
+              bool shapesFin = true, shapesDiffer = false;
+              std::vector<float> gs[NN_SHAPE_COUNT];
+              for (int sh = 0; sh < NN_SHAPE_COUNT; sh++) {
+                  GenParams p; p.lengthSec = 1.5f; p.shape = sh; p.focus = 0.4f;
+                  p.tone = 0.5f; p.motion = 0.5f; p.seed = 9;
+                  v.generate(p, nullptr, gs[sh]);
+                  for (float x : gs[sh]) if (!std::isfinite(x)) shapesFin = false;
+              }
+              if (gs[NN_PLUCK] != gs[NN_PAD]) shapesDiffer = true;
+              CHECK(shapesFin, "vae: all shapes + tone/motion/focus stay finite");
+              CHECK(shapesDiffer, "vae: shapes produce different output");
+
+              /* key snap + style-conditioned + pitch-spread */
               std::vector<float> style(20000);
               for (size_t i = 0; i < style.size(); i++)
                   style[i] = sinf(2 * 3.14159265f * 300 * i / 44100.0f) * 0.6f;
-              std::vector<float> gs;
-              bool oks = v.generate(1.0f, 0.3f, 0.7f, 2.0f, 5, &style, gs);
-              bool sfin = true; for (float x : gs) if (!std::isfinite(x)) sfin = false;
-              CHECK(oks && sfin && !gs.empty(),
-                    "vae: style-conditioned + pitch-spread generate is finite");
+              GenParams pk; pk.lengthSec = 1.0f; pk.chaos = 0.3f; pk.morph = 0.7f;
+              pk.pitchSpread = 2.0f; pk.keySemi = 0; pk.shape = NN_PLUCK; pk.seed = 5;
+              std::vector<float> gk;
+              bool okk = v.generate(pk, &style, gk);
+              bool kfin = true; for (float x : gk) if (!std::isfinite(x)) kfin = false;
+              CHECK(okk && kfin && !gk.empty(),
+                    "vae: key-snap + style + pitch-spread generate is finite");
           }
       }
     }

@@ -44,7 +44,12 @@ static const int pNLen    = LAYER_PARAMS_END + 0;
 static const int pNChaos  = LAYER_PARAMS_END + 1;
 static const int pNMorph  = LAYER_PARAMS_END + 2;
 static const int pNSpread = LAYER_PARAMS_END + 3;
-static const int NUM_PARAMS = LAYER_PARAMS_END + 4;                  /* 23 */
+static const int pNShape  = LAYER_PARAMS_END + 4;   /* Pluck/Pad/Drone/Free */
+static const int pNKey    = LAYER_PARAMS_END + 5;   /* Off + C..B pitch snap */
+static const int pNTone   = LAYER_PARAMS_END + 6;   /* dark..bright          */
+static const int pNMotion = LAYER_PARAMS_END + 7;   /* sweep                 */
+static const int pNFocus  = LAYER_PARAMS_END + 8;   /* harmonic sharpening   */
+static const int NUM_PARAMS = LAYER_PARAMS_END + 9;                  /* 28 */
 
 static float paramReal(int idx, float n)
 {
@@ -61,6 +66,11 @@ static float paramReal(int idx, float n)
     if (idx == pNChaos)  return n;                      /* 0..1         */
     if (idx == pNMorph)  return n;                      /* 0..1         */
     if (idx == pNSpread) return n * 12.0f;              /* 0..12 st     */
+    if (idx == pNShape)  return (float)(int)(n * (NN_SHAPE_COUNT - 0.001f)); /* 0..3 */
+    if (idx == pNKey)    return (float)(int)(n * 12.999f);  /* 0=Off,1..12=C..B */
+    if (idx == pNTone)   return (n - 0.5f) * 2.0f;      /* -1..+1       */
+    if (idx == pNMotion) return n;                      /* 0..1         */
+    if (idx == pNFocus)  return n;                      /* 0..1         */
     int off = (idx - PARAM_LAYER0) % PPLAY;
     if (off == 0) return n;                             /* vol          */
     if (off == 1) return n;                             /* pan          */
@@ -424,15 +434,23 @@ struct Plugin {
      * trained style; a lassoed sound (with Morph > 0) seeds the latent. */
     bool vaeGenerate()
     {
-        float lenSec = paramReal(pNLen, params[pNLen]);
-        float chaos  = paramReal(pNChaos, params[pNChaos]);
-        float morph  = paramReal(pNMorph, params[pNMorph]);
-        float spread = paramReal(pNSpread, params[pNSpread]);
+        GenParams gp;
+        gp.lengthSec   = paramReal(pNLen, params[pNLen]);
+        gp.chaos       = paramReal(pNChaos, params[pNChaos]);
+        gp.morph       = paramReal(pNMorph, params[pNMorph]);
+        gp.pitchSpread = paramReal(pNSpread, params[pNSpread]);
+        gp.shape       = (int)paramReal(pNShape, params[pNShape]);
+        int key        = (int)paramReal(pNKey, params[pNKey]);   /* 0=Off,1..12 */
+        gp.keySemi     = key == 0 ? -1 : (key - 1);
+        gp.tone        = paramReal(pNTone, params[pNTone]);
+        gp.motion      = paramReal(pNMotion, params[pNMotion]);
+        gp.focus       = paramReal(pNFocus, params[pNFocus]);
+        gp.seed        = neuralSeed;
 
         std::vector<float> style;
         const std::vector<float>* stylePtr = nullptr;
         LibIndex* ix = indexLive.load();
-        if (morph > 0.001f && ix && !lassoSel.empty()) {
+        if (gp.morph > 0.001f && ix && !lassoSel.empty()) {
             uint32_t r = neuralSeed;
             r = r * 1664525u + 1013904223u;
             int fa = lassoSel[(r >> 8) % lassoSel.size()];
@@ -440,10 +458,12 @@ struct Plugin {
             if (style.size() >= 1024) stylePtr = &style;
         }
 
-        logf("neural(VAE): %.1fs, chaos %d%%, morph %d%%, spread %.0fst, seed %08X",
-             lenSec, (int)(chaos * 100), (int)(morph * 100), spread, neuralSeed);
+        static const char* sh[NN_SHAPE_COUNT] = { "Pluck", "Pad", "Drone", "Free" };
+        logf("neural(VAE): %s %.1fs chaos %d%% focus %d%% key %d seed %08X",
+             sh[gp.shape % NN_SHAPE_COUNT], gp.lengthSec, (int)(gp.chaos * 100),
+             (int)(gp.focus * 100), gp.keySemi, neuralSeed);
         std::vector<float> mono;
-        if (!vae.generate(lenSec, chaos, morph, spread, neuralSeed, stylePtr, mono)) {
+        if (!vae.generate(gp, stylePtr, mono)) {
             logf("neural(VAE): generate failed"); return false;
         }
         neuralSeed = neuralSeed * 1664525u + 1013904223u;
@@ -612,6 +632,11 @@ static void paramName(int idx, char* out)
     if (idx == pNChaos)  { strcpy(out, "NChaos"); return; }
     if (idx == pNMorph)  { strcpy(out, "NMorph"); return; }
     if (idx == pNSpread) { strcpy(out, "NSprd");  return; }
+    if (idx == pNShape)  { strcpy(out, "NShape"); return; }
+    if (idx == pNKey)    { strcpy(out, "NKey");   return; }
+    if (idx == pNTone)   { strcpy(out, "NTone");  return; }
+    if (idx == pNMotion) { strcpy(out, "NMotn");  return; }
+    if (idx == pNFocus)  { strcpy(out, "NFocus"); return; }
     int lay = (idx - PARAM_LAYER0) / PPLAY, off = (idx - PARAM_LAYER0) % PPLAY;
     snprintf(out, kVstMaxParamStrLen + 1, "L%d %s", lay + 1, kLayNames[off]);
 }
@@ -624,8 +649,17 @@ static void paramDisplay(Plugin* p, int idx, char* out)
     if (idx == pMinLen || idx == pMaxLen) { snprintf(out, 16, "%.2f", v); return; }
     if (idx == pMaxMB) { snprintf(out, 16, "%d", (int)(v + 0.5f)); return; }
     if (idx == pNLen) { snprintf(out, 16, "%.1f", v); return; }
-    if (idx == pNChaos || idx == pNMorph) { snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); return; }
+    if (idx == pNChaos || idx == pNMorph || idx == pNMotion || idx == pNFocus) {
+        snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); return; }
     if (idx == pNSpread) { snprintf(out, 16, "%.1f", v); return; }
+    if (idx == pNShape) {
+        static const char* sh[NN_SHAPE_COUNT] = { "Pluck", "Pad", "Drone", "Free" };
+        snprintf(out, 16, "%s", sh[(int)v % NN_SHAPE_COUNT]); return; }
+    if (idx == pNKey) {
+        static const char* kn[13] = { "Off", "C", "C#", "D", "D#", "E", "F",
+                                      "F#", "G", "G#", "A", "A#", "B" };
+        snprintf(out, 16, "%s", kn[(int)v % 13]); return; }
+    if (idx == pNTone) { snprintf(out, 16, "%+d", (int)(v * 100)); return; }
     if (idx >= PARAM_LAYER0 && idx < LAYER_PARAMS_END) {
         int off = (idx - PARAM_LAYER0) % PPLAY;
         if (off == 2) { snprintf(out, 16, "%+.1f", v); return; }
@@ -767,7 +801,8 @@ static intptr_t dispatcher(AEffect* e, int32_t opcode, int32_t index,
             if (index < PARAM_LAYER0)      lbl = kParamMeta[index].label;
             else if (index == pNLen)       lbl = "s";
             else if (index == pNSpread)    lbl = "st";
-            else if (index >= LAYER_PARAMS_END) lbl = "%";   /* NChaos/NMorph */
+            else if (index == pNShape || index == pNKey) lbl = "";
+            else if (index >= LAYER_PARAMS_END) lbl = "%";   /* NChaos/Morph/Tone/Motn/Focus */
             else if ((index - PARAM_LAYER0) % PPLAY == 2) lbl = "st";
             else lbl = "%";
             copyStr(ptr, lbl, kVstMaxParamStrLen + 1);
@@ -831,6 +866,11 @@ AEffect* VSTPluginMain(audioMasterCallback host)
     p->params[pNChaos]  = 0.35f;
     p->params[pNMorph]  = 0.00f;
     p->params[pNSpread] = 0.00f;
+    p->params[pNShape]  = 0.05f;    /* -> Pluck (usable one-shot by default) */
+    p->params[pNKey]    = 0.00f;    /* -> Off   */
+    p->params[pNTone]   = 0.50f;    /* -> 0     */
+    p->params[pNMotion] = 0.00f;
+    p->params[pNFocus]  = 0.30f;    /* a little sharpening for tonal clarity */
 
     e->magic            = kEffectMagic;
     e->dispatcher       = dispatcher;

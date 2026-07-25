@@ -28,7 +28,7 @@
 struct ERect { int16_t top, left, bottom, right; };
 
 static const int ED_W = 1000;
-static const int ED_H = 800;
+static const int ED_H = 880;
 static const int KNOB_R = 13;
 
 /* constellation view */
@@ -36,9 +36,10 @@ static const int CV_X = 12, CV_Y = 76, CV_W = 628, CV_H = 424;
 /* palette + console (right column) */
 static const int PAL_X = 656, PAL_Y = 96, PAL_BW = 104, PAL_BH = 74, PAL_GAP = 8;
 static const int CON_Y = 424, CON_H = 76;
-/* synth row + layer strip */
+/* synth row, neural sculpt row, layer strip */
 static const int SYN_Y = 512;
-static const int LAY_Y = 562;
+static const int NN2_Y = 560;    /* second neural row (shape/key + sculpt knobs) */
+static const int LAY_Y = 648;
 static const int MAX_LASSO = 256;
 
 static ERect     g_rect = { 0, 0, (int16_t)ED_H, (int16_t)ED_W };
@@ -123,6 +124,17 @@ static inline void nnKnob(int k, KnobPos* kp)
     kp->param = prm[k]; kp->label = lbl[k];
     kp->cx = 550 + k * 66; kp->cy = SYN_Y + 20;
 }
+/* neural sculpt: Shape/Key buttons + Tone/Motion/Focus knobs (NN2 row) */
+static const int NN2KNOBS = 3;
+static inline void nn2Knob(int k, KnobPos* kp)
+{
+    static const int prm[NN2KNOBS] = { pNTone, pNMotion, pNFocus };
+    static const char* lbl[NN2KNOBS] = { "Tone", "Motion", "Focus" };
+    kp->param = prm[k]; kp->label = lbl[k];
+    kp->cx = 566 + k * 66; kp->cy = NN2_Y + 34;
+}
+static inline void nnShapeBtnRect(RECT* r) { r->left = 90;  r->right = 210; r->top = NN2_Y + 20; r->bottom = NN2_Y + 44; }
+static inline void nnKeyBtnRect(RECT* r)   { r->left = 218; r->right = 320; r->top = NN2_Y + 20; r->bottom = NN2_Y + 44; }
 
 /* ---- drawing ---- */
 
@@ -397,6 +409,25 @@ static void paintEditor(HWND hwnd, EditorState* st)
     SetTextColor(dc, nnReady ? RGB(150, 220, 160) : RGB(150, 156, 170));
     TextOutA(dc, 828, SYN_Y + 12, nnStat, (int)strlen(nnStat));
 
+    /* neural sculpt row: shape + key buttons, tone/motion/focus knobs */
+    SetTextColor(dc, RGB(120, 200, 250));
+    TextOutA(dc, 12, NN2_Y + 26, "SCULPT", 6);
+    RECT shr; nnShapeBtnRect(&shr);
+    char shv[16]; paramDisplay(p, pNShape, shv);
+    char shb[24]; snprintf(shb, sizeof(shb), "Shape: %s", shv);
+    drawTextBtn(dc, shr, shb, RGB(70, 60, 110));
+    RECT kyr; nnKeyBtnRect(&kyr);
+    char kyv[16]; paramDisplay(p, pNKey, kyv);
+    char kyb[24]; snprintf(kyb, sizeof(kyb), "Key: %s", kyv);
+    drawTextBtn(dc, kyr, kyb, RGB(60, 80, 110));
+    for (int k = 0; k < NN2KNOBS; k++) {
+        KnobPos kp; nn2Knob(k, &kp);
+        char val[16]; paramDisplay(p, kp.param, val);
+        drawKnob(dc, kp.cx, kp.cy, p->params[kp.param], kp.label, val);
+    }
+    SetTextColor(dc, RGB(140, 146, 160));
+    TextOutA(dc, 760, NN2_Y + 30, "Shape + Key = melodic sculpt", 28);
+
     /* layer controls */
     SetTextColor(dc, RGB(120, 200, 250));
     TextOutA(dc, 12, LAY_Y + 2, "COMBO LAYERS", 12);
@@ -560,6 +591,20 @@ static void onLDown(EditorState* st, int x, int y)
         }
     }
 
+    /* neural sculpt buttons: Shape cycles 4 states, Key cycles 13 (Off + notes) */
+    nnShapeBtnRect(&r);
+    if (inRect(r, x, y)) {
+        int s = ((int)paramReal(pNShape, p->params[pNShape]) + 1) % NN_SHAPE_COUNT;
+        p->setParamFromUI(pNShape, (s + 0.5f) / (float)NN_SHAPE_COUNT);
+        InvalidateRect(st->hwnd, nullptr, FALSE); return;
+    }
+    nnKeyBtnRect(&r);
+    if (inRect(r, x, y)) {
+        int key = ((int)paramReal(pNKey, p->params[pNKey]) + 1) % 13;
+        p->setParamFromUI(pNKey, (key + 0.5f) / 13.0f);
+        InvalidateRect(st->hwnd, nullptr, FALSE); return;
+    }
+
     /* constellation: press starts either a click-audition or a lasso */
     RECT cv = { CV_X, CV_Y, CV_X + CV_W, CV_Y + CV_H };
     if (inRect(cv, x, y)) {
@@ -572,12 +617,14 @@ static void onLDown(EditorState* st, int x, int y)
 
     /* knobs */
     KnobPos kp;
-    for (int k = 0; k < NSKNOBS + NVKNOBS + NNKNOBS + 4 * PPLAY; k++) {
+    int nBase = NSKNOBS + NVKNOBS + NNKNOBS + NN2KNOBS;
+    for (int k = 0; k < nBase + 4 * PPLAY; k++) {
         if (k < NSKNOBS) settingsKnob(k, &kp);
         else if (k < NSKNOBS + NVKNOBS) voiceKnob(k - NSKNOBS, &kp);
         else if (k < NSKNOBS + NVKNOBS + NNKNOBS) nnKnob(k - NSKNOBS - NVKNOBS, &kp);
+        else if (k < nBase) nn2Knob(k - NSKNOBS - NVKNOBS - NNKNOBS, &kp);
         else {
-            int j = k - NSKNOBS - NVKNOBS - NNKNOBS;
+            int j = k - nBase;
             layerKnob(j / PPLAY, j % PPLAY, &kp);
         }
         if ((x - kp.cx) * (x - kp.cx) + (y - kp.cy) * (y - kp.cy) <=
@@ -751,7 +798,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 #else  /* !_WIN32 — headless build for CI */
 
 struct ERect { int16_t top, left, bottom, right; };
-static ERect g_rect = { 0, 0, 800, 1000 };
+static ERect g_rect = { 0, 0, 880, 1000 };
 static ERect* editorRect() { return &g_rect; }
 static bool editorOpen(Plugin*, void*) { return false; }
 static void editorClose(Plugin*) {}

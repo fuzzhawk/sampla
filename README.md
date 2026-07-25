@@ -80,9 +80,14 @@ export via **EXP SYNTH** / **EXP NN**.
      is easiest (the workflow handles both). A GitHub Release asset also works,
      but use the *"Attach binaries"* dropzone on the Draft-release page (2 GB);
      the release-notes text box and the repo file uploader cap at 25 MB.
-   - Knobs: **NLen** (length), **Chaos** (latent temperature/drift), **Morph**
-     (blend a lassoed library sound's latent in as a seed), **Sprd** (random
-     pitch spread). Status reads `NN: VAE` when loaded.
+   - Controls: **NLen** (length), **Chaos** (latent temperature/drift),
+     **Morph** (blend a lassoed library sound's latent in as a seed), **Sprd**
+     (random pitch spread). Sculpt row: **Shape** (Pluck / Pad / Drone / Free
+     — envelope + latent-motion presets, so one model makes keyboard plucks,
+     sweeping pads, or sustained drones), **Key** (spectral pitch correction:
+     snaps the fundamental to a chosen note, Off + C…B), **Tone** (dark↔bright
+     tilt), **Motion** (sweeping band emphasis for pads), **Focus** (harmonic
+     sharpening for a more melodic/less-muddy tone). Status reads `NN: VAE`.
 
 2. **RAVE via ONNX Runtime (fallback, higher-fidelity, needs a GPU to train).**
 
