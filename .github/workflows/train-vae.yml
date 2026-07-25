@@ -2,10 +2,17 @@ name: train-vae
 
 # Train the Sample Librarian's neural one-shot model (a small spectral VAE)
 # on YOUR samples, entirely on a CPU GitHub runner — no GPU, no local toolchain.
-# Run it from the Actions tab: give it a URL to a .zip of one-shots (a GitHub
-# Release asset works well, up to 2 GB) and download the resulting
-# `nnvae-model` artifact. Drop nnvae.json next to the Sample Librarian DLL and
-# the NN panel reads "NN: VAE".
+# Run it from the Actions tab: give it a URL to a .zip of one-shots and
+# download the resulting `nnvae-model` artifact. Drop nnvae.json next to the
+# Sample Librarian DLL and the NN panel reads "NN: VAE".
+#
+# Where to host the zip (any direct-download URL works — the runner fetches it):
+#   * Google Drive : upload the zip, Share -> "Anyone with the link", paste the
+#                    normal share URL (the workflow uses gdown to handle it).
+#   * Dropbox      : share link ending in ?dl=0 is fine (auto-converted).
+#   * GitHub Release asset also works, but use the "Attach binaries" dropzone on
+#     the Draft-release page (that allows 2 GB) — NOT the release-notes text box
+#     or the repo file uploader, which cap at 25 MB.
 #
 # A few hundred coherent melodic one-shots is plenty; training takes minutes.
 
@@ -13,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       samples_url:
-        description: "URL to a .zip of one-shot samples (<= 2 GB)"
+        description: "URL to a .zip of one-shots (Google Drive / Dropbox / direct link)"
         required: true
       sample_rate:
         description: "Model sample rate"
@@ -40,14 +47,28 @@ jobs:
 
       - name: Install deps (CPU)
         run: |
-          pip install --quiet numpy soundfile
+          pip install --quiet numpy soundfile gdown
           pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Download + unpack samples
+        env:
+          URL: ${{ github.event.inputs.samples_url }}
         run: |
-          curl -sSL -o samples.zip "${{ github.event.inputs.samples_url }}"
+          set -e
+          if echo "$URL" | grep -qi 'drive.google.com\|docs.google.com'; then
+            echo "fetching via gdown (Google Drive)"
+            gdown --fuzzy "$URL" -O samples.zip
+          elif echo "$URL" | grep -qi 'dropbox.com'; then
+            echo "fetching from Dropbox"
+            curl -sSL "$(echo "$URL" | sed 's/dl=0/dl=1/')" -o samples.zip
+          else
+            echo "fetching direct URL"
+            curl -sSL "$URL" -o samples.zip
+          fi
+          ls -la samples.zip
+          # accept .zip or a tarball
           mkdir -p samples
-          unzip -q samples.zip -d samples || (tar xf samples.zip -C samples)
+          unzip -q samples.zip -d samples || tar xf samples.zip -C samples
           echo "audio files:"; find samples -type f \
             \( -iname '*.wav' -o -iname '*.aif' -o -iname '*.aiff' \
                -o -iname '*.flac' -o -iname '*.mp3' -o -iname '*.ogg' \) | wc -l

@@ -72,10 +72,14 @@ export via **EXP SYNTH** / **EXP NN**.
    to ship**). Reconstruction is Griffin-Lim. Trains on **CPU in minutes, no
    GPU** — the whole reason it exists alongside RAVE.
    - **Train it:** Actions tab -> `train-vae` -> paste a URL to a `.zip` of
-     one-shots (a Release asset, <= 2 GB) -> download the `nnvae-model`
-     artifact -> drop `nnvae.json` next to the plugin DLL. See
-     `tools/train_vae.py`. A few hundred coherent one-shots is plenty; tighter
-     and more coherent beats bigger.
+     one-shots -> download the `nnvae-model` artifact -> drop `nnvae.json` next
+     to the plugin DLL. See `tools/train_vae.py`. A few hundred coherent
+     one-shots is plenty; tighter and more coherent beats bigger.
+   - **Hosting the zip:** any direct-download URL works — the runner fetches
+     it. A **Google Drive** ("Anyone with the link") or **Dropbox** share URL
+     is easiest (the workflow handles both). A GitHub Release asset also works,
+     but use the *"Attach binaries"* dropzone on the Draft-release page (2 GB);
+     the release-notes text box and the repo file uploader cap at 25 MB.
    - Knobs: **NLen** (length), **Chaos** (latent temperature/drift), **Morph**
      (blend a lassoed library sound's latent in as a seed), **Sprd** (random
      pitch spread). Status reads `NN: VAE` when loaded.
