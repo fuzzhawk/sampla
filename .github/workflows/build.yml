@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64 g++-mingw-w64-i686 wine64
+
+      - name: Build plugins (x64 + x86)
+        run: make
+
+      - name: Build test host
+        run: make test
+
+      - name: Engine unit test (native DSP)
+        run: make enginetest
+
+      - name: Stage neural test fixtures (Linux ORT + tiny model)
+        run: |
+          pip install --quiet onnx numpy
+          python3 tools/make_test_model.py build/nn
+          D=16 HOP=2048 python3 tools/make_test_model.py build/nn16
+          ORT=onnxruntime-linux-x64-1.17.3
+          curl -sSL -o ort.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/$ORT.tgz"
+          tar xzf ort.tgz
+          cp "$ORT"/lib/libonnxruntime.so.1.17.3 build/nn/libonnxruntime.so
+          cp "$ORT"/lib/libonnxruntime.so.1.17.3 build/nn16/libonnxruntime.so
+
+      - name: Librarian unit test (native, incl. neural)
+        run: make librariantest
+
+      - name: Smoke test under Wine (x64)
+        run: |
+          export WINEDEBUG=-all
+          wine build/host64.exe build/GranularSampler_x64.dll
+          wine build/host64.exe build/SampleLibrarian_x64.dll
+
+      - name: Upload DLLs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sampla-plugin-dlls
+          path: build/*.dll
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" build/*.dll
