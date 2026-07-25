@@ -4,7 +4,8 @@ LDLIBS = -lgdi32 -lcomdlg32 -lole32 -lshell32 -luser32
 
 HDRS = src/vst2.h src/engine.h src/wav.h src/fft.h src/editor.h
 LIBHDRS = src/vst2.h src/wav.h src/fft.h librarian/src/librarian.h \
-          librarian/src/neural.h librarian/src/editor.h third_party/onnxruntime_c_api.h
+          librarian/src/neural.h librarian/src/nnsynth.h librarian/src/editor.h \
+          third_party/onnxruntime_c_api.h third_party/json.hpp
 
 all: build/GranularSampler_x64.dll build/GranularSampler_x86.dll \
      build/SampleLibrarian_x64.dll build/SampleLibrarian_x86.dll
@@ -53,7 +54,7 @@ build/engine_test: test/engine_test.cpp src/engine.h src/wav.h src/fft.h
 librariantest: build/librarian_test
 	./build/librarian_test
 
-build/librarian_test: librarian/test/librarian_test.cpp librarian/src/librarian.h librarian/src/neural.h src/wav.h src/fft.h
+build/librarian_test: librarian/test/librarian_test.cpp librarian/src/librarian.h librarian/src/neural.h librarian/src/nnsynth.h src/wav.h src/fft.h third_party/json.hpp
 	mkdir -p build
 	$(CXX) -O2 -std=c++14 -Wall -Isrc -o $@ librarian/test/librarian_test.cpp -ldl
 

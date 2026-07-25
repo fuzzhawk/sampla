@@ -1,0 +1,67 @@
+name: train-vae
+
+# Train the Sample Librarian's neural one-shot model (a small spectral VAE)
+# on YOUR samples, entirely on a CPU GitHub runner — no GPU, no local toolchain.
+# Run it from the Actions tab: give it a URL to a .zip of one-shots (a GitHub
+# Release asset works well, up to 2 GB) and download the resulting
+# `nnvae-model` artifact. Drop nnvae.json next to the Sample Librarian DLL and
+# the NN panel reads "NN: VAE".
+#
+# A few hundred coherent melodic one-shots is plenty; training takes minutes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      samples_url:
+        description: "URL to a .zip of one-shot samples (<= 2 GB)"
+        required: true
+      sample_rate:
+        description: "Model sample rate"
+        required: false
+        default: "44100"
+      epochs:
+        description: "Training epochs"
+        required: false
+        default: "60"
+      max_files:
+        description: "Cap on files analyzed"
+        required: false
+        default: "1500"
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps (CPU)
+        run: |
+          pip install --quiet numpy soundfile
+          pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download + unpack samples
+        run: |
+          curl -sSL -o samples.zip "${{ github.event.inputs.samples_url }}"
+          mkdir -p samples
+          unzip -q samples.zip -d samples || (tar xf samples.zip -C samples)
+          echo "audio files:"; find samples -type f \
+            \( -iname '*.wav' -o -iname '*.aif' -o -iname '*.aiff' \
+               -o -iname '*.flac' -o -iname '*.mp3' -o -iname '*.ogg' \) | wc -l
+
+      - name: Train VAE
+        run: |
+          python3 tools/train_vae.py --input samples --out nnvae.json \
+            --sr "${{ github.event.inputs.sample_rate }}" \
+            --epochs "${{ github.event.inputs.epochs }}" \
+            --max-files "${{ github.event.inputs.max_files }}"
+          ls -la nnvae.json
+
+      - name: Upload model
+        uses: actions/upload-artifact@v4
+        with:
+          name: nnvae-model
+          path: nnvae.json
