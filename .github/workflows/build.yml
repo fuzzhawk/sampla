@@ -42,11 +42,15 @@ jobs:
       - name: Librarian unit test (native, incl. neural)
         run: make librariantest
 
+      - name: Slicer unit test (native)
+        run: make slicertest
+
       - name: Smoke test under Wine (x64)
         run: |
           export WINEDEBUG=-all
           wine build/host64.exe build/GranularSampler_x64.dll
           wine build/host64.exe build/SampleLibrarian_x64.dll
+          wine build/host64.exe build/MatchSlicer_x64.dll
 
       - name: Upload DLLs
         uses: actions/upload-artifact@v4

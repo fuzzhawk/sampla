@@ -6,9 +6,11 @@ HDRS = src/vst2.h src/engine.h src/wav.h src/fft.h src/editor.h
 LIBHDRS = src/vst2.h src/wav.h src/fft.h librarian/src/librarian.h \
           librarian/src/neural.h librarian/src/nnsynth.h librarian/src/editor.h \
           third_party/onnxruntime_c_api.h third_party/json.hpp
+MSHDRS = src/vst2.h src/wav.h src/fft.h slicematch/src/slicer.h slicematch/src/editor.h
 
 all: build/GranularSampler_x64.dll build/GranularSampler_x86.dll \
-     build/SampleLibrarian_x64.dll build/SampleLibrarian_x86.dll
+     build/SampleLibrarian_x64.dll build/SampleLibrarian_x86.dll \
+     build/MatchSlicer_x64.dll build/MatchSlicer_x86.dll
 
 # ---- Granular Sampler ----
 
@@ -29,6 +31,16 @@ build/SampleLibrarian_x64.dll: librarian/src/plugin.cpp $(LIBHDRS)
 build/SampleLibrarian_x86.dll: librarian/src/plugin.cpp $(LIBHDRS)
 	mkdir -p build
 	i686-w64-mingw32-g++ $(CXXFLAGS) -Isrc -o $@ librarian/src/plugin.cpp $(LDLIBS)
+
+# ---- Match Slicer ----
+
+build/MatchSlicer_x64.dll: slicematch/src/plugin.cpp $(MSHDRS)
+	mkdir -p build
+	x86_64-w64-mingw32-g++ $(CXXFLAGS) -Isrc -o $@ slicematch/src/plugin.cpp $(LDLIBS)
+
+build/MatchSlicer_x86.dll: slicematch/src/plugin.cpp $(MSHDRS)
+	mkdir -p build
+	i686-w64-mingw32-g++ $(CXXFLAGS) -Isrc -o $@ slicematch/src/plugin.cpp $(LDLIBS)
 
 # ---- CI smoke-test hosts ----
 
@@ -57,6 +69,13 @@ librariantest: build/librarian_test
 build/librarian_test: librarian/test/librarian_test.cpp librarian/src/librarian.h librarian/src/neural.h librarian/src/nnsynth.h src/wav.h src/fft.h third_party/json.hpp
 	mkdir -p build
 	$(CXX) -O2 -std=c++14 -Wall -Isrc -o $@ librarian/test/librarian_test.cpp -ldl
+
+slicertest: build/slicer_test
+	./build/slicer_test
+
+build/slicer_test: slicematch/test/slicer_test.cpp slicematch/src/slicer.h src/wav.h src/fft.h
+	mkdir -p build
+	$(CXX) -O2 -std=c++14 -Wall -Wextra -Isrc -o $@ slicematch/test/slicer_test.cpp
 
 clean:
 	rm -rf build

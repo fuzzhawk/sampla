@@ -9,6 +9,32 @@ artifact contains x64 + x86 DLLs for both:
 - **Sample Librarian** (`SampleLibrarian_*.dll`) — scans your sample library,
   spectrally fingerprints every WAV, and layers 2–4 files that match in tonal
   content but occupy different parts of the spectrum. Sources in `librarian/`.
+- **Match Slicer** (`MatchSlicer_*.dll`) — tempo-synced audio mosaicing: load a
+  guide (an amen break, a synth melody) and a main file; it slices the guide,
+  finds the best-matching section of the main file for each slice, and plays
+  them back in the guide's groove, locked to the DAW. Sources in `slicematch/`.
+
+## Match Slicer
+
+Drop a **GUIDE** file (the rhythm/structure you want — an amen break, a synth
+melody) and a **MAIN** file (the sound you want to hear) onto their lanes, then
+press **MATCH**. The engine cuts the guide into slices — either a tempo **Grid**
+(Div 1/4…1/32 × Bars) or the guide's own **transients** — fingerprints each
+slice (16 log-bands + centroid + loudness), searches the main file for the
+window whose fingerprint matches best, and rearranges those main-file chunks
+onto the guide's timeline. Playback is **locked to the host transport** (it
+follows tempo and bar position), so it stays in the groove; a held MIDI note
+also triggers free-run playback.
+
+The waveforms show the guide's slice boundaries and which regions of the main
+file got used; the **map** strip colors each guide slice by its source. Knobs:
+**Mix** (guide↔mosaic), **Div**/**Bars** (grid), **Xfade** (slice crossfade),
+**Var** (anti-repeat variety), **SpecW** (timbre vs loudness weighting), plus
+**GainFollow** (match the guide slice's loudness), **PitchMatch** (repitch the
+main chunk toward the guide slice's pitch — for melodic guides), and
+**StretchFit** (resample the main chunk to fill the slot). **EXPORT WAV**
+renders the mosaic; originals are never modified. 11 automatable params; the
+chunk saves both file paths and re-matches on reload.
 
 ## Sample Librarian
 
