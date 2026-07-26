@@ -14,6 +14,8 @@
  *
  * All strings deliberately ASCII-only: this UI renders through DrawTextA,
  * and multi-byte glyphs turn to mojibake there.
+ *
+ * Pink "kawaii" theme (dark plum bg, hot-pink + lavender accents), roomy layout.
  */
 #ifndef LIB_EDITOR_H
 #define LIB_EDITOR_H
@@ -27,19 +29,38 @@
 
 struct ERect { int16_t top, left, bottom, right; };
 
+/* ---- kawaii palette ---- */
+#define KW_BG        RGB(43, 27, 44)
+#define KW_PANEL     RGB(32, 20, 34)
+#define KW_CONST     RGB(26, 16, 30)
+#define KW_BORDER    RGB(120, 70, 110)
+#define KW_TEXT      RGB(255, 224, 240)
+#define KW_TEXT_DIM  RGB(200, 150, 185)
+#define KW_ACCENT    RGB(255, 150, 200)
+#define KW_KNOB      RGB(92, 54, 84)
+#define KW_KNOB_RIM  RGB(200, 110, 165)
+#define KW_KNOB_IND  RGB(255, 214, 238)
+#define KW_BTN       RGB(70, 44, 68)
+#define KW_BTN_ON    RGB(210, 90, 160)
+#define KW_CONSOLE   RGB(140, 235, 200)
+#define KW_STAR      RGB(255, 214, 150)
+#define KW_LASSO     RGB(255, 236, 150)
+#define KW_SEL       RGB(160, 240, 190)
+#define KW_PATH_BG   RGB(56, 36, 54)
+
 static const int ED_W = 1000;
-static const int ED_H = 880;
-static const int KNOB_R = 13;
+static const int ED_H = 920;
+static const int KNOB_R = 14;
 
 /* constellation view */
-static const int CV_X = 12, CV_Y = 76, CV_W = 628, CV_H = 424;
+static const int CV_X = 12, CV_Y = 80, CV_W = 628, CV_H = 430;
 /* palette + console (right column) */
-static const int PAL_X = 656, PAL_Y = 96, PAL_BW = 104, PAL_BH = 74, PAL_GAP = 8;
-static const int CON_Y = 424, CON_H = 76;
+static const int PAL_X = 656, PAL_Y = 100, PAL_BW = 104, PAL_BH = 76, PAL_GAP = 10;
+static const int CON_Y = 440, CON_H = 88;
 /* synth row, neural sculpt row, layer strip */
-static const int SYN_Y = 512;
-static const int NN2_Y = 560;    /* second neural row (shape/key + sculpt knobs) */
-static const int LAY_Y = 648;
+static const int SYN_Y = 534;
+static const int NN2_Y = 592;    /* second neural row (shape/key + sculpt knobs) */
+static const int LAY_Y = 680;
 static const int MAX_LASSO = 256;
 
 static ERect     g_rect = { 0, 0, (int16_t)ED_H, (int16_t)ED_W };
@@ -69,14 +90,14 @@ struct EditorState {
 
 /* ---- geometry ---- */
 
-static inline void pathBoxRect(RECT* r)  { r->left = 150; r->right = 700; r->top = 6;  r->bottom = 26; }
-static inline void scanBtnRect(RECT* r)  { r->left = 710; r->right = 770; r->top = 6;  r->bottom = 26; }
-static inline void tuneBtnRect(RECT* r)  { r->left = 214; r->right = 330; r->top = 40; r->bottom = 64; }
-static inline void randBtnRect(RECT* r)  { r->left = PAL_X; r->right = PAL_X + 3 * PAL_BW + 2 * PAL_GAP; r->top = 44; r->bottom = 88; }
+static inline void pathBoxRect(RECT* r)  { r->left = 150; r->right = 700; r->top = 8;  r->bottom = 28; }
+static inline void scanBtnRect(RECT* r)  { r->left = 712; r->right = 780; r->top = 8;  r->bottom = 28; }
+static inline void tuneBtnRect(RECT* r)  { r->left = 220; r->right = 344; r->top = 44; r->bottom = 68; }
+static inline void randBtnRect(RECT* r)  { r->left = PAL_X; r->right = PAL_X + 3 * PAL_BW + 2 * PAL_GAP; r->top = 48; r->bottom = 92; }
 static inline void synthBtnRect(RECT* r) { r->left = 12;  r->right = 132; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
-static inline void synExpBtnRect(RECT* r){ r->left = 138; r->right = 248; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
-static inline void nnGenBtnRect(RECT* r) { r->left = 258; r->right = 388; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
-static inline void nnExpBtnRect(RECT* r) { r->left = 394; r->right = 504; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
+static inline void synExpBtnRect(RECT* r){ r->left = 140; r->right = 252; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
+static inline void nnGenBtnRect(RECT* r) { r->left = 262; r->right = 392; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
+static inline void nnExpBtnRect(RECT* r) { r->left = 400; r->right = 510; r->top = SYN_Y; r->bottom = SYN_Y + 38; }
 static inline void exportBtnRect(RECT* r){ r->left = 800; r->right = 985; r->top = LAY_Y + 78; r->bottom = LAY_Y + 118; }
 static inline void palBtnRect(int i, RECT* r)
 {
@@ -98,7 +119,7 @@ static inline void settingsKnob(int k, KnobPos* kp)
     static const int prm[NSKNOBS] = { pMinLen, pMaxLen, pMaxMB };
     static const char* lbl[NSKNOBS] = { "MinLen", "MaxLen", "MaxMB" };
     kp->param = prm[k]; kp->label = lbl[k];
-    kp->cx = 40 + k * 64; kp->cy = 52;
+    kp->cx = 44 + k * 70; kp->cy = 56;
 }
 static const int NVKNOBS = 3;
 static inline void voiceKnob(int k, KnobPos* kp)
@@ -113,7 +134,7 @@ static inline void layerKnob(int lay, int off, KnobPos* kp)
     static const char* lbl[PPLAY] = { "Vol", "Pan", "Tune" };
     kp->param = PARAM_LAYER0 + lay * PPLAY + off;
     kp->label = lbl[off];
-    kp->cx = 590 + off * 66;
+    kp->cx = 590 + off * 68;
     kp->cy = LAY_Y + 44 + lay * 54;
 }
 static const int NNKNOBS = 4;
@@ -122,7 +143,7 @@ static inline void nnKnob(int k, KnobPos* kp)
     static const int prm[NNKNOBS] = { pNLen, pNChaos, pNMorph, pNSpread };
     static const char* lbl[NNKNOBS] = { "NLen", "Chaos", "Morph", "Sprd" };
     kp->param = prm[k]; kp->label = lbl[k];
-    kp->cx = 550 + k * 66; kp->cy = SYN_Y + 20;
+    kp->cx = 552 + k * 68; kp->cy = SYN_Y + 20;
 }
 /* neural sculpt: Shape/Key buttons + Tone/Motion/Focus knobs (NN2 row) */
 static const int NN2KNOBS = 3;
@@ -131,34 +152,34 @@ static inline void nn2Knob(int k, KnobPos* kp)
     static const int prm[NN2KNOBS] = { pNTone, pNMotion, pNFocus };
     static const char* lbl[NN2KNOBS] = { "Tone", "Motion", "Focus" };
     kp->param = prm[k]; kp->label = lbl[k];
-    kp->cx = 566 + k * 66; kp->cy = NN2_Y + 34;
+    kp->cx = 568 + k * 68; kp->cy = NN2_Y + 34;
 }
-static inline void nnShapeBtnRect(RECT* r) { r->left = 90;  r->right = 210; r->top = NN2_Y + 20; r->bottom = NN2_Y + 44; }
-static inline void nnKeyBtnRect(RECT* r)   { r->left = 218; r->right = 320; r->top = NN2_Y + 20; r->bottom = NN2_Y + 44; }
+static inline void nnShapeBtnRect(RECT* r) { r->left = 94;  r->right = 214; r->top = NN2_Y + 20; r->bottom = NN2_Y + 44; }
+static inline void nnKeyBtnRect(RECT* r)   { r->left = 224; r->right = 328; r->top = NN2_Y + 20; r->bottom = NN2_Y + 44; }
 
 /* ---- drawing ---- */
 
 static void drawKnob(HDC dc, int cx, int cy, float val, const char* label,
                      const char* value)
 {
-    HBRUSH kb = CreateSolidBrush(RGB(64, 68, 84));
-    HPEN   rim = CreatePen(PS_SOLID, 1, RGB(96, 102, 122));
+    HBRUSH kb = CreateSolidBrush(KW_KNOB);
+    HPEN   rim = CreatePen(PS_SOLID, 2, KW_KNOB_RIM);
     HGDIOBJ ob = SelectObject(dc, kb), op = SelectObject(dc, rim);
     Ellipse(dc, cx - KNOB_R, cy - KNOB_R, cx + KNOB_R, cy + KNOB_R);
     double a = (0.75 + (double)val * 1.5) * 3.14159265358979;
     int ex = cx + (int)(cos(a) * (KNOB_R - 3));
     int ey = cy + (int)(sin(a) * (KNOB_R - 3));
-    HPEN ind = CreatePen(PS_SOLID, 2, RGB(232, 236, 246));
+    HPEN ind = CreatePen(PS_SOLID, 2, KW_KNOB_IND);
     SelectObject(dc, ind);
     MoveToEx(dc, cx, cy, nullptr); LineTo(dc, ex, ey);
     SelectObject(dc, op); SelectObject(dc, ob);
     DeleteObject(kb); DeleteObject(rim); DeleteObject(ind);
 
-    SetTextColor(dc, RGB(150, 156, 170));
-    RECT tl = { cx - 28, cy - KNOB_R - 15, cx + 28, cy - KNOB_R - 1 };
+    SetTextColor(dc, KW_TEXT_DIM);
+    RECT tl = { cx - 30, cy - KNOB_R - 16, cx + 30, cy - KNOB_R - 1 };
     DrawTextA(dc, label, -1, &tl, DT_CENTER | DT_SINGLELINE);
-    SetTextColor(dc, RGB(205, 210, 222));
-    RECT vl = { cx - 28, cy + KNOB_R + 1, cx + 28, cy + KNOB_R + 15 };
+    SetTextColor(dc, KW_TEXT);
+    RECT vl = { cx - 30, cy + KNOB_R + 1, cx + 30, cy + KNOB_R + 16 };
     DrawTextA(dc, value, -1, &vl, DT_CENTER | DT_SINGLELINE);
 }
 
@@ -166,7 +187,11 @@ static void drawTextBtn(HDC dc, const RECT& r, const char* text, COLORREF bg)
 {
     HBRUSH bb = CreateSolidBrush(bg);
     FillRect(dc, &r, bb); DeleteObject(bb);
-    SetTextColor(dc, RGB(220, 224, 236));
+    HPEN pen = CreatePen(PS_SOLID, 1, KW_BORDER);
+    HGDIOBJ o = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, r.left, r.top, r.right, r.bottom);
+    SelectObject(dc, o); SelectObject(dc, ob); DeleteObject(pen);
+    SetTextColor(dc, KW_TEXT);
     DrawTextA(dc, text, -1, (RECT*)&r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
@@ -181,7 +206,7 @@ static void ensureConstBmp(EditorState* st, HDC refDc)
     st->constBmp = CreateCompatibleBitmap(refDc, CV_W, CV_H);
     HGDIOBJ ob = SelectObject(dc, st->constBmp);
     RECT full = { 0, 0, CV_W, CV_H };
-    HBRUSH bg = CreateSolidBrush(RGB(10, 12, 20));
+    HBRUSH bg = CreateSolidBrush(KW_CONST);
     FillRect(dc, &full, bg); DeleteObject(bg);
 
     if (ix) {
@@ -191,8 +216,8 @@ static void ensureConstBmp(EditorState* st, HDC refDc)
             int y = (int)(f.cy * CV_H);
             int lum = 90 + (int)(f.pitchConf * 130.0f);
             if (lum > 235) lum = 235;
-            SetPixel(dc, x, y, RGB(lum / 2, lum * 3 / 4, lum));
-            SetPixel(dc, x + 1, y, RGB(lum / 3, lum / 2, lum * 3 / 4));
+            SetPixel(dc, x, y, RGB(lum, lum / 2, lum * 3 / 4));       /* pink stars */
+            SetPixel(dc, x + 1, y, RGB(lum * 3 / 4, lum / 3, lum / 2));
         }
     }
     SelectObject(dc, ob);
@@ -210,7 +235,7 @@ static void drawConstellation(HDC dc, EditorState* st)
     SelectObject(mem, ob);
     DeleteDC(mem);
 
-    HPEN border = CreatePen(PS_SOLID, 1, RGB(60, 66, 84));
+    HPEN border = CreatePen(PS_SOLID, 1, KW_BORDER);
     HGDIOBJ op = SelectObject(dc, border);
     HGDIOBJ obr = SelectObject(dc, GetStockObject(NULL_BRUSH));
     Rectangle(dc, CV_X - 1, CV_Y - 1, CV_X + CV_W + 1, CV_Y + CV_H + 1);
@@ -220,7 +245,7 @@ static void drawConstellation(HDC dc, EditorState* st)
 
     /* lasso selection highlight (cap the draw for paint speed) */
     if (ix && !p->lassoSel.empty()) {
-        HPEN selPen = CreatePen(PS_SOLID, 1, RGB(140, 240, 160));
+        HPEN selPen = CreatePen(PS_SOLID, 1, KW_SEL);
         HGDIOBJ o3 = SelectObject(dc, selPen);
         int shown = 0;
         for (int fi : p->lassoSel) {
@@ -236,7 +261,7 @@ static void drawConstellation(HDC dc, EditorState* st)
 
     /* live lasso stroke */
     if (st->lassoActive && st->lassoN > 1) {
-        HPEN lp = CreatePen(PS_SOLID, 1, RGB(240, 240, 160));
+        HPEN lp = CreatePen(PS_SOLID, 1, KW_LASSO);
         HGDIOBJ o4 = SelectObject(dc, lp);
         MoveToEx(dc, st->lasso[0].x, st->lasso[0].y, nullptr);
         for (int i = 1; i < st->lassoN; i++)
@@ -247,7 +272,7 @@ static void drawConstellation(HDC dc, EditorState* st)
     /* selected combo as a connected star shape */
     if (ix && p->selected >= 0) {
         const Combo& c = p->combos[p->selected];
-        HPEN star = CreatePen(PS_SOLID, 1, RGB(250, 220, 120));
+        HPEN star = CreatePen(PS_SOLID, 2, KW_STAR);
         HGDIOBJ o2 = SelectObject(dc, star);
         int px[4], py[4], nPts = 0;
         for (int l = 0; l < c.nLayers; l++) {
@@ -272,20 +297,20 @@ static void drawConstellation(HDC dc, EditorState* st)
 static void drawConsole(HDC dc, Plugin* p)
 {
     RECT r = { PAL_X, CON_Y, PAL_X + 3 * PAL_BW + 2 * PAL_GAP, CON_Y + CON_H };
-    HBRUSH bb = CreateSolidBrush(RGB(14, 16, 22));
+    HBRUSH bb = CreateSolidBrush(KW_PANEL);
     FillRect(dc, &r, bb); DeleteObject(bb);
-    HPEN border = CreatePen(PS_SOLID, 1, RGB(60, 66, 84));
+    HPEN border = CreatePen(PS_SOLID, 1, KW_BORDER);
     HGDIOBJ op = SelectObject(dc, border);
     HGDIOBJ obr = SelectObject(dc, GetStockObject(NULL_BRUSH));
     Rectangle(dc, r.left, r.top, r.right, r.bottom);
     SelectObject(dc, op); SelectObject(dc, obr); DeleteObject(border);
 
-    SetTextColor(dc, RGB(140, 190, 150));
+    SetTextColor(dc, KW_CONSOLE);
     int lines = CON_H / 13 - 1;
     if (lines > p->logCount) lines = p->logCount;
     for (int i = 0; i < lines; i++) {
         const std::string& ln = p->logLine(lines - 1 - i);
-        RECT tr = { r.left + 4, r.top + 3 + i * 13, r.right - 4, r.top + 16 + i * 13 };
+        RECT tr = { r.left + 6, r.top + 4 + i * 13, r.right - 6, r.top + 17 + i * 13 };
         DrawTextA(dc, ln.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 }
@@ -301,22 +326,26 @@ static void paintEditor(HWND hwnd, EditorState* st)
     SetBkMode(dc, TRANSPARENT);
 
     RECT full = { 0, 0, ED_W, ED_H };
-    HBRUSH bg = CreateSolidBrush(RGB(24, 26, 32));
+    HBRUSH bg = CreateSolidBrush(KW_BG);
     FillRect(dc, &full, bg); DeleteObject(bg);
 
-    SetTextColor(dc, RGB(230, 234, 244));
-    TextOutA(dc, 12, 8, "SAMPLE LIBRARIAN", 16);
+    SetTextColor(dc, KW_ACCENT);
+    TextOutA(dc, 12, 10, "* SAMPLE LIBRARIAN *", 20);
 
     RECT pb; pathBoxRect(&pb);
-    HBRUSH pbb = CreateSolidBrush(RGB(40, 44, 58));
+    HBRUSH pbb = CreateSolidBrush(KW_PATH_BG);
     FillRect(dc, &pb, pbb); DeleteObject(pbb);
-    SetTextColor(dc, RGB(200, 206, 220));
+    { HPEN pen = CreatePen(PS_SOLID, 1, KW_BORDER);
+      HGDIOBJ o = SelectObject(dc, pen), obb = SelectObject(dc, GetStockObject(NULL_BRUSH));
+      Rectangle(dc, pb.left, pb.top, pb.right, pb.bottom);
+      SelectObject(dc, o); SelectObject(dc, obb); DeleteObject(pen); }
+    SetTextColor(dc, KW_TEXT);
     std::string shown = p->libPath.empty()
         ? std::string("  (click to choose your library folder)")
         : "  " + p->libPath;
     DrawTextA(dc, shown.c_str(), -1, &pb, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     RECT sc; scanBtnRect(&sc);
-    drawTextBtn(dc, sc, p->prog.running.load() ? "..." : "SCAN", RGB(60, 90, 60));
+    drawTextBtn(dc, sc, p->prog.running.load() ? "..." : "SCAN", KW_BTN_ON);
 
     char status[160];
     LibIndex* ix = p->indexLive.load();
@@ -327,8 +356,8 @@ static void paintEditor(HWND hwnd, EditorState* st)
         snprintf(status, sizeof(status), "index: %d files", (int)ix->files.size());
     else
         snprintf(status, sizeof(status), "no index - choose a folder and SCAN");
-    SetTextColor(dc, RGB(150, 190, 150));
-    TextOutA(dc, 344, 46, status, (int)strlen(status));
+    SetTextColor(dc, KW_CONSOLE);
+    TextOutA(dc, 360, 50, status, (int)strlen(status));
 
     for (int k = 0; k < NSKNOBS; k++) {
         KnobPos kp; settingsKnob(k, &kp);
@@ -338,35 +367,39 @@ static void paintEditor(HWND hwnd, EditorState* st)
     RECT tb; tuneBtnRect(&tb);
     bool tk = paramReal(pTuneKey, p->params[pTuneKey]) >= 0.5f;
     drawTextBtn(dc, tb, tk ? "Tune to key: ON" : "Tune to key: OFF",
-                tk ? RGB(70, 90, 130) : RGB(48, 52, 66));
+                tk ? KW_BTN_ON : KW_BTN);
 
     drawConstellation(dc, st);
-    SetTextColor(dc, RGB(110, 116, 132));
+    SetTextColor(dc, KW_TEXT_DIM);
     TextOutA(dc, CV_X + 6, CV_Y + CV_H - 16,
              "click a star = audition   |   click-drag = lasso a region",
              57);
 
     RECT rb; randBtnRect(&rb);
-    drawTextBtn(dc, rb, "RANDOMIZE - 12 combos", RGB(120, 70, 110));
+    drawTextBtn(dc, rb, "RANDOMIZE - 12 combos", KW_BTN_ON);
     for (int i = 0; i < 12; i++) {
         RECT r; palBtnRect(i, &r);
         const Combo& c = p->combos[i];
-        COLORREF col = c.nLayers ? (i == p->selected ? RGB(90, 120, 170)
-                                                     : RGB(56, 62, 82))
-                                 : RGB(38, 40, 50);
+        COLORREF col = c.nLayers ? (i == p->selected ? RGB(200, 90, 150)
+                                                     : RGB(78, 50, 74))
+                                 : RGB(48, 32, 48);
         HBRUSH b = CreateSolidBrush(col);
         FillRect(dc, &r, b); DeleteObject(b);
+        { HPEN pen = CreatePen(PS_SOLID, 1, KW_BORDER);
+          HGDIOBJ o = SelectObject(dc, pen), obb = SelectObject(dc, GetStockObject(NULL_BRUSH));
+          Rectangle(dc, r.left, r.top, r.right, r.bottom);
+          SelectObject(dc, o); SelectObject(dc, obb); DeleteObject(pen); }
         char t1[32];
         if (c.nLayers)
             snprintf(t1, sizeof(t1), "#%d  %dx  %.0f%%", i + 1, c.nLayers,
                      c.score * 100.0f);
         else
             snprintf(t1, sizeof(t1), "#%d  -", i + 1);
-        SetTextColor(dc, RGB(220, 224, 236));
+        SetTextColor(dc, KW_TEXT);
         RECT tr = r; tr.bottom = tr.top + 22;
         DrawTextA(dc, t1, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (c.nLayers) {
-            SetTextColor(dc, RGB(150, 158, 176));
+            SetTextColor(dc, KW_TEXT_DIM);
             for (int l = 0; l < c.nLayers && l < 3; l++) {
                 size_t sl = c.lay[l].path.find_last_of("/\\");
                 std::string nm = sl == std::string::npos ? c.lay[l].path
@@ -383,15 +416,13 @@ static void paintEditor(HWND hwnd, EditorState* st)
 
     /* synth + neural row */
     RECT sb2; synthBtnRect(&sb2);
-    drawTextBtn(dc, sb2, "SYNTHESIZE", RGB(130, 90, 50));
+    drawTextBtn(dc, sb2, "SYNTHESIZE", RGB(170, 90, 130));
     RECT se; synExpBtnRect(&se);
-    drawTextBtn(dc, se, "EXP SYNTH", p->synthBuf.empty() ? RGB(44, 48, 60)
-                                                         : RGB(70, 110, 80));
+    drawTextBtn(dc, se, "EXP SYNTH", p->synthBuf.empty() ? KW_BTN : KW_BTN_ON);
     RECT ng; nnGenBtnRect(&ng);
-    drawTextBtn(dc, ng, "GENERATE NN", RGB(80, 70, 140));
+    drawTextBtn(dc, ng, "GENERATE NN", RGB(150, 90, 180));
     RECT ne; nnExpBtnRect(&ne);
-    drawTextBtn(dc, ne, "EXP NN", p->neuralBuf.empty() ? RGB(44, 48, 60)
-                                                       : RGB(70, 110, 80));
+    drawTextBtn(dc, ne, "EXP NN", p->neuralBuf.empty() ? KW_BTN : KW_BTN_ON);
     for (int k = 0; k < NNKNOBS; k++) {
         KnobPos kp; nnKnob(k, &kp);
         char val[16]; paramDisplay(p, kp.param, val);
@@ -406,36 +437,36 @@ static void paintEditor(HWND hwnd, EditorState* st)
     else
         snprintf(nnStat, sizeof(nnStat), "NN: %s",
                  (p->vaeTried || p->neuralTried) ? "absent" : "idle");
-    SetTextColor(dc, nnReady ? RGB(150, 220, 160) : RGB(150, 156, 170));
+    SetTextColor(dc, nnReady ? KW_CONSOLE : KW_TEXT_DIM);
     TextOutA(dc, 828, SYN_Y + 12, nnStat, (int)strlen(nnStat));
 
     /* neural sculpt row: shape + key buttons, tone/motion/focus knobs */
-    SetTextColor(dc, RGB(120, 200, 250));
+    SetTextColor(dc, KW_ACCENT);
     TextOutA(dc, 12, NN2_Y + 26, "SCULPT", 6);
     RECT shr; nnShapeBtnRect(&shr);
     char shv[16]; paramDisplay(p, pNShape, shv);
     char shb[24]; snprintf(shb, sizeof(shb), "Shape: %s", shv);
-    drawTextBtn(dc, shr, shb, RGB(70, 60, 110));
+    drawTextBtn(dc, shr, shb, RGB(120, 80, 150));
     RECT kyr; nnKeyBtnRect(&kyr);
     char kyv[16]; paramDisplay(p, pNKey, kyv);
     char kyb[24]; snprintf(kyb, sizeof(kyb), "Key: %s", kyv);
-    drawTextBtn(dc, kyr, kyb, RGB(60, 80, 110));
+    drawTextBtn(dc, kyr, kyb, RGB(150, 80, 130));
     for (int k = 0; k < NN2KNOBS; k++) {
         KnobPos kp; nn2Knob(k, &kp);
         char val[16]; paramDisplay(p, kp.param, val);
         drawKnob(dc, kp.cx, kp.cy, p->params[kp.param], kp.label, val);
     }
-    SetTextColor(dc, RGB(140, 146, 160));
+    SetTextColor(dc, KW_TEXT_DIM);
     TextOutA(dc, 760, NN2_Y + 30, "Shape + Key = melodic sculpt", 28);
 
     /* layer controls */
-    SetTextColor(dc, RGB(120, 200, 250));
+    SetTextColor(dc, KW_ACCENT);
     TextOutA(dc, 12, LAY_Y + 2, "COMBO LAYERS", 12);
     if (p->selected >= 0) {
         const Combo& c = p->combos[p->selected];
         for (int l = 0; l < 4; l++) {
             int y = LAY_Y + 36 + l * 54;
-            SetTextColor(dc, RGB(190, 196, 208));
+            SetTextColor(dc, KW_TEXT_DIM);
             if (l < c.nLayers) {
                 size_t sl = c.lay[l].path.find_last_of("/\\");
                 std::string nm = sl == std::string::npos ? c.lay[l].path
@@ -457,7 +488,7 @@ static void paintEditor(HWND hwnd, EditorState* st)
                 }
         }
     } else {
-        SetTextColor(dc, RGB(150, 156, 170));
+        SetTextColor(dc, KW_TEXT_DIM);
         TextOutA(dc, 14, LAY_Y + 40,
                  "click a combo in the palette to open its layer controls", 55);
     }
@@ -468,7 +499,7 @@ static void paintEditor(HWND hwnd, EditorState* st)
         drawKnob(dc, kp.cx, kp.cy, p->params[kp.param], kp.label, val);
     }
     RECT eb; exportBtnRect(&eb);
-    drawTextBtn(dc, eb, "EXPORT WAV", RGB(70, 110, 80));
+    drawTextBtn(dc, eb, "EXPORT WAV", KW_BTN_ON);
 
     BitBlt(hdc, 0, 0, ED_W, ED_H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob); DeleteObject(bmp); DeleteDC(dc);
@@ -798,7 +829,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 #else  /* !_WIN32 — headless build for CI */
 
 struct ERect { int16_t top, left, bottom, right; };
-static ERect g_rect = { 0, 0, 880, 1000 };
+static ERect g_rect = { 0, 0, 920, 1000 };
 static ERect* editorRect() { return &g_rect; }
 static bool editorOpen(Plugin*, void*) { return false; }
 static void editorClose(Plugin*) {}

@@ -4,13 +4,14 @@
  * Included from plugin.cpp after the Plugin struct is defined. Layout:
  *   top      title + EXPORT WAV
  *   guide    waveform of the guide file, with slice boundaries + playhead
- *   main     waveform of the main file, with the used source regions tinted
+ *   main     waveform of the main file, with source regions + onset markers
  *   map      one cell per guide slice, colored by which main region it pulled
- *   controls MATCH button, knobs, Slice/Gain/Pitch/Fit toggle buttons
+ *   controls MATCH button, knobs, guide/main slice + follow toggle buttons
  *   console  scrolling status log
  *
- * Drop a .wav on the guide or main lane (or double-click to browse). All
- * strings are ASCII (DrawTextA).
+ * Pink "kawaii" theme (dark plum bg, hot-pink + lavender accents). Drop a .wav
+ * on the guide or main lane (or double-click to browse). All strings are
+ * ASCII (DrawTextA).
  */
 #ifndef MS_EDITOR_H
 #define MS_EDITOR_H
@@ -23,9 +24,27 @@
 
 struct ERect { int16_t top, left, bottom, right; };
 
-static const int ED_W = 920;
-static const int ED_H = 600;
-static const int KNOB_R = 13;
+/* ---- kawaii palette ---- */
+#define KW_BG        RGB(43, 27, 44)    /* deep plum background        */
+#define KW_PANEL     RGB(32, 20, 34)    /* wave / console panel        */
+#define KW_BORDER    RGB(120, 70, 110)  /* panel borders               */
+#define KW_TEXT      RGB(255, 224, 240) /* bright text                 */
+#define KW_TEXT_DIM  RGB(200, 150, 185) /* secondary text              */
+#define KW_ACCENT    RGB(255, 150, 200) /* hot pink                    */
+#define KW_KNOB      RGB(92, 54, 84)    /* knob body                   */
+#define KW_KNOB_RIM  RGB(200, 110, 165) /* knob rim                    */
+#define KW_KNOB_IND  RGB(255, 214, 238) /* knob indicator              */
+#define KW_BTN_ON    RGB(210, 90, 160)  /* active toggle / action      */
+#define KW_BTN_OFF   RGB(70, 44, 68)    /* inactive toggle             */
+#define KW_WAVE_G    RGB(255, 150, 200) /* guide waveform (pink)       */
+#define KW_WAVE_M    RGB(180, 150, 245) /* main waveform (lavender)    */
+#define KW_PLAY      RGB(255, 90, 140)  /* playhead                    */
+#define KW_SLICE     RGB(255, 208, 130) /* guide slice boundaries      */
+#define KW_ONSET     RGB(140, 235, 200) /* main transient markers      */
+
+static const int ED_W = 1000;
+static const int ED_H = 700;
+static const int KNOB_R = 15;
 
 static ERect     g_rect = { 0, 0, (int16_t)ED_H, (int16_t)ED_W };
 static HINSTANCE g_hInst = nullptr;
@@ -37,52 +56,59 @@ struct EditorState {
 };
 
 /* ---- geometry ---- */
-static inline void guideRect(RECT* r) { r->left = 12; r->right = 908; r->top = 42;  r->bottom = 128; }
-static inline void mainRect(RECT* r)  { r->left = 12; r->right = 908; r->top = 150; r->bottom = 236; }
-static inline void mapRect(RECT* r)   { r->left = 12; r->right = 908; r->top = 244; r->bottom = 272; }
-static inline void exportRect(RECT* r){ r->left = 792; r->right = 908; r->top = 6; r->bottom = 30; }
-static inline void matchRect(RECT* r) { r->left = 12; r->right = 150; r->top = 286; r->bottom = 322; }
+static inline void guideRect(RECT* r) { r->left = 16; r->right = 984; r->top = 56;  r->bottom = 150; }
+static inline void mainRect(RECT* r)  { r->left = 16; r->right = 984; r->top = 176; r->bottom = 270; }
+static inline void mapRect(RECT* r)   { r->left = 16; r->right = 984; r->top = 286; r->bottom = 316; }
+static inline void exportRect(RECT* r){ r->left = 856; r->right = 984; r->top = 12; r->bottom = 40; }
+static inline void matchRect(RECT* r) { r->left = 16; r->right = 176; r->top = 334; r->bottom = 374; }
 static inline bool inRect(const RECT& r, int x, int y)
 { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
 
 struct KnobPos { int param, cx, cy; const char* label; };
-static const int NKNOBS = 7;
+static const int NKNOBS = 9;
 static inline void knob(int k, KnobPos* kp)
 {
-    static const int prm[NKNOBS] = { pMaster, pMix, pDiv, pBars, pXfade, pVariation, pSpectralW };
-    static const char* lbl[NKNOBS] = { "Master", "Mix", "Div", "Bars", "Xfade", "Var", "SpecW" };
+    static const int prm[NKNOBS] = { pMaster, pMix, pDiv, pBars, pXfade,
+                                     pVariation, pSpectralW, pGuideThresh, pMainThresh };
+    static const char* lbl[NKNOBS] = { "Master", "Mix", "Div", "Bars", "Xfade",
+                                       "Var", "SpecW", "GuideThr", "MainThr" };
     kp->param = prm[k]; kp->label = lbl[k];
-    kp->cx = 200 + k * 62; kp->cy = 312;
+    kp->cx = 128 + k * 96; kp->cy = 424;
 }
-/* toggle buttons */
-static inline void togRect(int t, RECT* r)   /* 0 Slice 1 Gain 2 Pitch 3 Fit */
-{ r->left = 12 + t * 122; r->right = r->left + 114; r->top = 344; r->bottom = 366; }
+/* toggle buttons: 0 GuideSlc 1 MainSlc 2 Gain 3 Pitch 4 Fit */
+static const int NTOGS = 5;
+static inline void togRect(int t, RECT* r)
+{ r->left = 16 + t * 192; r->right = r->left + 180; r->top = 470; r->bottom = 494; }
 
 /* ---- drawing helpers ---- */
 static void drawKnob(HDC dc, int cx, int cy, float val, const char* label, const char* value)
 {
-    HBRUSH kb = CreateSolidBrush(RGB(64, 68, 84)); HPEN rim = CreatePen(PS_SOLID, 1, RGB(96, 102, 122));
+    HBRUSH kb = CreateSolidBrush(KW_KNOB); HPEN rim = CreatePen(PS_SOLID, 2, KW_KNOB_RIM);
     HGDIOBJ ob = SelectObject(dc, kb), op = SelectObject(dc, rim);
     Ellipse(dc, cx - KNOB_R, cy - KNOB_R, cx + KNOB_R, cy + KNOB_R);
     double a = (0.75 + (double)val * 1.5) * 3.14159265358979;
-    HPEN ind = CreatePen(PS_SOLID, 2, RGB(232, 236, 246)); SelectObject(dc, ind);
+    HPEN ind = CreatePen(PS_SOLID, 2, KW_KNOB_IND); SelectObject(dc, ind);
     MoveToEx(dc, cx, cy, nullptr); LineTo(dc, cx + (int)(cos(a)*(KNOB_R-3)), cy + (int)(sin(a)*(KNOB_R-3)));
     SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(kb); DeleteObject(rim); DeleteObject(ind);
-    SetTextColor(dc, RGB(150, 156, 170)); RECT tl = { cx-30, cy-KNOB_R-15, cx+30, cy-KNOB_R-1 };
+    SetTextColor(dc, KW_TEXT_DIM); RECT tl = { cx-40, cy-KNOB_R-16, cx+40, cy-KNOB_R-2 };
     DrawTextA(dc, label, -1, &tl, DT_CENTER | DT_SINGLELINE);
-    SetTextColor(dc, RGB(205, 210, 222)); RECT vl = { cx-30, cy+KNOB_R+1, cx+30, cy+KNOB_R+15 };
+    SetTextColor(dc, KW_TEXT); RECT vl = { cx-40, cy+KNOB_R+2, cx+40, cy+KNOB_R+16 };
     DrawTextA(dc, value, -1, &vl, DT_CENTER | DT_SINGLELINE);
 }
 static void drawBtn(HDC dc, const RECT& r, const char* t, COLORREF bg)
 {
     HBRUSH b = CreateSolidBrush(bg); FillRect(dc, &r, b); DeleteObject(b);
-    SetTextColor(dc, RGB(222, 226, 238));
+    HPEN pen = CreatePen(PS_SOLID, 1, KW_BORDER);
+    HGDIOBJ o = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, r.left, r.top, r.right, r.bottom);
+    SelectObject(dc, o); SelectObject(dc, ob); DeleteObject(pen);
+    SetTextColor(dc, KW_TEXT);
     DrawTextA(dc, t, -1, (RECT*)&r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 static void drawWave(HDC dc, const RECT& r, const std::vector<float>& mono, int frames, COLORREF col)
 {
-    HBRUSH bg = CreateSolidBrush(RGB(16, 18, 24)); FillRect(dc, &r, bg); DeleteObject(bg);
-    HPEN border = CreatePen(PS_SOLID, 1, RGB(60, 66, 84));
+    HBRUSH bg = CreateSolidBrush(KW_PANEL); FillRect(dc, &r, bg); DeleteObject(bg);
+    HPEN border = CreatePen(PS_SOLID, 1, KW_BORDER);
     HGDIOBJ o = SelectObject(dc, border); HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
     Rectangle(dc, r.left, r.top, r.right, r.bottom); SelectObject(dc, o); SelectObject(dc, ob); DeleteObject(border);
     if (frames < 2 || mono.empty()) return;
@@ -103,9 +129,9 @@ static void drawWave(HDC dc, const RECT& r, const std::vector<float>& mono, int 
 static COLORREF candColor(int start, int total)
 {
     float h = total > 0 ? (float)start / total : 0.0f;
-    int r = (int)(128 + 120 * sinf(h * 6.2831853f));
-    int g = (int)(128 + 120 * sinf(h * 6.2831853f + 2.09f));
-    int b = (int)(128 + 120 * sinf(h * 6.2831853f + 4.18f));
+    int r = (int)(170 + 80 * sinf(h * 6.2831853f));
+    int g = (int)(110 + 90 * sinf(h * 6.2831853f + 2.09f));
+    int b = (int)(170 + 80 * sinf(h * 6.2831853f + 4.18f));
     return RGB(r & 255, g & 255, b & 255);
 }
 
@@ -115,27 +141,27 @@ static void paintEditor(HWND hwnd, EditorState* st)
     PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
     HDC dc = CreateCompatibleDC(hdc); HBITMAP bmp = CreateCompatibleBitmap(hdc, ED_W, ED_H);
     HGDIOBJ ob = SelectObject(dc, bmp); SetBkMode(dc, TRANSPARENT);
-    RECT full = { 0, 0, ED_W, ED_H }; HBRUSH bgb = CreateSolidBrush(RGB(24, 26, 32));
+    RECT full = { 0, 0, ED_W, ED_H }; HBRUSH bgb = CreateSolidBrush(KW_BG);
     FillRect(dc, &full, bgb); DeleteObject(bgb);
 
-    SetTextColor(dc, RGB(230, 234, 244)); TextOutA(dc, 12, 8, "MATCH SLICER", 12);
-    SetTextColor(dc, RGB(140, 146, 160));
-    TextOutA(dc, 120, 10, "guide's groove, main's sound", 28);
+    SetTextColor(dc, KW_ACCENT); TextOutA(dc, 16, 12, "* MATCH SLICER *", 16);
+    SetTextColor(dc, KW_TEXT_DIM);
+    TextOutA(dc, 180, 15, "guide's groove, main's sound  <3", 32);
     RECT er; exportRect(&er); drawBtn(dc, er, "EXPORT WAV",
-        p->eng.live.load() ? RGB(70, 110, 80) : RGB(44, 48, 60));
+        p->eng.live.load() ? KW_BTN_ON : KW_BTN_OFF);
 
     Slicer& s = p->eng;
     int gframes = s.guide.frames, mframes = s.main.frames;
 
     /* guide waveform + slice boundaries + playhead */
     RECT gr; guideRect(&gr);
-    drawWave(dc, gr, s.guide.mono, gframes, RGB(110, 180, 240));
-    SetTextColor(dc, RGB(120, 200, 250));
-    TextOutA(dc, gr.left, gr.top - 14, gframes > 1 ? "GUIDE" :
+    drawWave(dc, gr, s.guide.mono, gframes, KW_WAVE_G);
+    SetTextColor(dc, KW_ACCENT);
+    TextOutA(dc, gr.left, gr.top - 16, gframes > 1 ? "GUIDE" :
              "GUIDE  - drop a .wav (or double-click) -", gframes > 1 ? 5 : 40);
     if (gframes > 1 && !s.slices.empty()) {
         int w = gr.right - gr.left;
-        HPEN sp = CreatePen(PS_SOLID, 1, RGB(240, 210, 110)); HGDIOBJ o = SelectObject(dc, sp);
+        HPEN sp = CreatePen(PS_SOLID, 1, KW_SLICE); HGDIOBJ o = SelectObject(dc, sp);
         for (auto& gs : s.slices) {
             int x = gr.left + (int)((int64_t)gs.start * w / gframes);
             MoveToEx(dc, x, gr.top, nullptr); LineTo(dc, x, gr.bottom);
@@ -143,12 +169,23 @@ static void paintEditor(HWND hwnd, EditorState* st)
         SelectObject(dc, o); DeleteObject(sp);
     }
 
-    /* main waveform + used regions tinted */
+    /* main waveform + used regions tinted + onset markers */
     RECT mr; mainRect(&mr);
-    drawWave(dc, mr, s.main.mono, mframes, RGB(150, 200, 150));
-    SetTextColor(dc, RGB(120, 200, 250));
-    TextOutA(dc, mr.left, mr.top - 14, mframes > 1 ? "MAIN" :
+    drawWave(dc, mr, s.main.mono, mframes, KW_WAVE_M);
+    SetTextColor(dc, KW_ACCENT);
+    TextOutA(dc, mr.left, mr.top - 16, mframes > 1 ? "MAIN" :
              "MAIN  - drop a .wav (or double-click) -", mframes > 1 ? 4 : 39);
+    /* main transient markers (only meaningful in main-transient mode) */
+    if (mframes > 1 && !s.mainOnsets.empty() &&
+        paramReal(pMainMode, p->params[pMainMode]) >= 0.5f) {
+        int w = mr.right - mr.left;
+        HPEN op = CreatePen(PS_SOLID, 1, KW_ONSET); HGDIOBJ o = SelectObject(dc, op);
+        for (int on : s.mainOnsets) {
+            int x = mr.left + (int)((int64_t)on * w / mframes);
+            MoveToEx(dc, x, mr.top + 1, nullptr); LineTo(dc, x, mr.top + 9);
+        }
+        SelectObject(dc, o); DeleteObject(op);
+    }
     if (mframes > 1 && !s.match.empty() && !s.cands.empty()) {
         int w = mr.right - mr.left, win = 0;
         { int a = 0; for (auto& gs : s.slices) a += gs.len; if (!s.slices.empty()) win = a / (int)s.slices.size(); }
@@ -164,7 +201,7 @@ static void paintEditor(HWND hwnd, EditorState* st)
 
     /* mapping strip: one cell per guide slice, colored by its source region */
     RECT mp; mapRect(&mp);
-    HBRUSH mbg = CreateSolidBrush(RGB(14, 16, 22)); FillRect(dc, &mp, mbg); DeleteObject(mbg);
+    HBRUSH mbg = CreateSolidBrush(KW_PANEL); FillRect(dc, &mp, mbg); DeleteObject(mbg);
     if (!s.slices.empty() && !s.match.empty() && gframes > 1) {
         int w = mp.right - mp.left;
         for (size_t i = 0; i < s.slices.size(); i++) {
@@ -181,7 +218,7 @@ static void paintEditor(HWND hwnd, EditorState* st)
     if (s.live.load()) {
         int gx = gr.left + (int)(pp * (gr.right - gr.left));
         int mpx = mp.left + (int)(pp * (mp.right - mp.left));
-        HPEN php = CreatePen(PS_SOLID, 1, RGB(250, 90, 90)); HGDIOBJ o = SelectObject(dc, php);
+        HPEN php = CreatePen(PS_SOLID, 2, KW_PLAY); HGDIOBJ o = SelectObject(dc, php);
         MoveToEx(dc, gx, gr.top, nullptr); LineTo(dc, gx, gr.bottom);
         MoveToEx(dc, mpx, mp.top, nullptr); LineTo(dc, mpx, mp.bottom);
         SelectObject(dc, o); DeleteObject(php);
@@ -189,14 +226,14 @@ static void paintEditor(HWND hwnd, EditorState* st)
 
     /* MATCH button */
     RECT mtr; matchRect(&mtr);
-    drawBtn(dc, mtr, s.haveBoth() ? "MATCH" : "MATCH (load both)",
-            s.haveBoth() ? RGB(120, 70, 110) : RGB(48, 52, 66));
-    SetTextColor(dc, RGB(150, 156, 170));
+    drawBtn(dc, mtr, s.haveBoth() ? "MATCH <3" : "MATCH (load both)",
+            s.haveBoth() ? KW_BTN_ON : KW_BTN_OFF);
+    SetTextColor(dc, KW_TEXT_DIM);
     { char info[96];
       if (!s.slices.empty()) snprintf(info, sizeof(info), "%d slices  ->  %d candidates",
                                       (int)s.slices.size(), (int)s.cands.size());
       else snprintf(info, sizeof(info), "load a guide + main, then MATCH");
-      TextOutA(dc, 164, 296, info, (int)strlen(info)); }
+      TextOutA(dc, 192, 346, info, (int)strlen(info)); }
 
     /* knobs */
     for (int k = 0; k < NKNOBS; k++) {
@@ -204,23 +241,27 @@ static void paintEditor(HWND hwnd, EditorState* st)
         drawKnob(dc, kp.cx, kp.cy, p->params[kp.param], kp.label, val);
     }
     /* toggles */
-    static const int tprm[4] = { pSliceMode, pGainFollow, pPitchMatch, pStretchFit };
-    static const char* tname[4] = { "Slice", "GainFollow", "PitchMatch", "StretchFit" };
-    for (int t = 0; t < 4; t++) {
+    static const int tprm[NTOGS] = { pSliceMode, pMainMode, pGainFollow, pPitchMatch, pStretchFit };
+    static const char* tname[NTOGS] = { "GuideSlc", "MainSlc", "GainFollow", "PitchMatch", "StretchFit" };
+    for (int t = 0; t < NTOGS; t++) {
         RECT r; togRect(t, &r); char v[16]; paramDisplay(p, tprm[t], v);
-        char lbl[32]; snprintf(lbl, sizeof(lbl), "%s: %s", tname[t], v);
+        char lbl[40]; snprintf(lbl, sizeof(lbl), "%s: %s", tname[t], v);
         bool on = paramReal(tprm[t], p->params[tprm[t]]) >= 0.5f;
-        drawBtn(dc, r, lbl, (t == 0 || on) ? RGB(70, 90, 130) : RGB(48, 52, 66));
+        drawBtn(dc, r, lbl, on ? KW_BTN_ON : KW_BTN_OFF);
     }
 
     /* console */
-    RECT con = { 12, 388, 908, 590 };
-    HBRUSH cbg = CreateSolidBrush(RGB(14, 16, 22)); FillRect(dc, &con, cbg); DeleteObject(cbg);
-    SetTextColor(dc, RGB(140, 190, 150));
+    RECT con = { 16, 512, 984, 688 };
+    HBRUSH cbg = CreateSolidBrush(KW_PANEL); FillRect(dc, &con, cbg); DeleteObject(cbg);
+    HPEN cpen = CreatePen(PS_SOLID, 1, KW_BORDER);
+    HGDIOBJ co = SelectObject(dc, cpen), cob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, con.left, con.top, con.right, con.bottom);
+    SelectObject(dc, co); SelectObject(dc, cob); DeleteObject(cpen);
+    SetTextColor(dc, KW_ONSET);
     int lines = (con.bottom - con.top) / 14 - 1; if (lines > p->logCount) lines = p->logCount;
     for (int i = 0; i < lines; i++) {
         const std::string& ln = p->logLine(lines - 1 - i);
-        RECT tr = { con.left + 6, con.top + 4 + i * 14, con.right - 6, con.top + 18 + i * 14 };
+        RECT tr = { con.left + 8, con.top + 6 + i * 14, con.right - 8, con.top + 20 + i * 14 };
         DrawTextA(dc, ln.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
@@ -258,12 +299,12 @@ static void onLDown(EditorState* st, int x, int y)
     matchRect(&r);  if (inRect(r, x, y)) { p->rematch(); InvalidateRect(st->hwnd, nullptr, FALSE); return; }
 
     /* toggle buttons */
-    static const int tprm[4] = { pSliceMode, pGainFollow, pPitchMatch, pStretchFit };
-    for (int t = 0; t < 4; t++) { togRect(t, &r);
+    static const int tprm[NTOGS] = { pSliceMode, pMainMode, pGainFollow, pPitchMatch, pStretchFit };
+    for (int t = 0; t < NTOGS; t++) { togRect(t, &r);
         if (inRect(r, x, y)) {
             bool on = paramReal(tprm[t], p->params[tprm[t]]) >= 0.5f;
             p->setParamFromUI(tprm[t], on ? 0.0f : 1.0f);
-            if (t == 0) p->rematch();            /* slice mode changes the pattern */
+            if (t == 0 || t == 1) p->rematch();   /* slice modes change the pattern */
             InvalidateRect(st->hwnd, nullptr, FALSE); return;
         } }
 
@@ -278,10 +319,11 @@ static void onLUp(EditorState* st)
 {
     Plugin* p = st->p;
     if (st->dragParam >= 0) {
-        /* Div/Bars change the slicing -> rematch */
+        /* params that change the slicing/matching -> rematch */
         if (st->dragParam == pDiv || st->dragParam == pBars ||
             st->dragParam == pXfade || st->dragParam == pVariation ||
-            st->dragParam == pSpectralW)
+            st->dragParam == pSpectralW || st->dragParam == pGuideThresh ||
+            st->dragParam == pMainThresh)
             p->rematch();
     }
     st->dragParam = -1;
@@ -367,7 +409,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 
 #else  /* !_WIN32 headless */
 struct ERect { int16_t top, left, bottom, right; };
-static ERect g_rect = { 0, 0, 600, 920 };
+static ERect g_rect = { 0, 0, 700, 1000 };
 static ERect* editorRect() { return &g_rect; }
 static bool editorOpen(Plugin*, void*) { return false; }
 static void editorClose(Plugin*) {}

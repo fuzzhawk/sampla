@@ -61,7 +61,8 @@ struct GuideSlice { int start = 0; int len = 0; SliceFeat f; };
 struct Candidate  { int start = 0; SliceFeat f; };
 
 struct SlicerParams {
-    int   sliceMode = SLICE_GRID;
+    int   sliceMode = SLICE_GRID;  /* how the GUIDE is sliced */
+    int   mainMode  = SLICE_GRID;  /* how MAIN candidates are cut */
     int   div = 2;          /* 0=1/4 1=1/8 2=1/16 3=1/32 grid steps per beat */
     int   bars = 1;         /* guide length in bars                          */
     float xfadeMs = 8.0f;
@@ -70,6 +71,8 @@ struct SlicerParams {
     bool  pitchMatch = false;
     bool  stretchFit = true;/* resample main chunk to fill the guide slot    */
     float spectralW = 0.8f; /* 0..1 weight of timbre vs loudness in matching */
+    float guideThresh = 0.4f; /* guide onset sensitivity (transient mode)    */
+    float mainThresh  = 0.4f; /* main  onset sensitivity (transient mode)    */
 };
 
 /* --------------------------------------------------------------- features */
@@ -147,6 +150,48 @@ static inline float sl_pitch(const float* mono, int start, int len, int rate)
     return (bestLag > 0 && best > 0.3f) ? (float)rate / bestLag : 0.0f;
 }
 
+/* Spectral-flux onset detector shared by guide slicing and main candidates.
+ * `thresh` 0..1: higher = fewer onsets (only strong transients). Returns onset
+ * sample positions, always including 0 as the first boundary. */
+static inline std::vector<int> sl_onsets(const float* mono, int frames, int rate,
+                                         float thresh, int minGap)
+{
+    (void)rate;
+    std::vector<int> onsets;
+    const int hop = 512, win = 1024;
+    if (frames < win) { onsets.push_back(0); return onsets; }
+    static float w[win];
+    static bool init = false;
+    if (!init) { for (int n = 0; n < win; n++) w[n] = 0.5f - 0.5f * cosf(SL_TWO_PI * n / win); init = true; }
+
+    std::vector<float> flux; flux.reserve(frames / hop + 1);
+    std::vector<float> prev(win / 2 + 1, 0.0f);
+    float re[win], im[win];
+    for (int s = 0; s + win <= frames; s += hop) {
+        for (int n = 0; n < win; n++) { re[n] = mono[s + n] * w[n]; im[n] = 0; }
+        fft_radix2(re, im, win, 0);
+        float fl = 0;
+        for (int k = 0; k <= win / 2; k++) {
+            float mag = sqrtf(re[k] * re[k] + im[k] * im[k]);
+            float d = mag - prev[k]; if (d > 0) fl += d; prev[k] = mag;
+        }
+        flux.push_back(fl);
+    }
+    float mult = 1.12f + thresh * 2.6f;
+    int last = -minGap;
+    for (int i = 1; i < (int)flux.size() - 1; i++) {
+        float loc = 0; int c = 0;
+        for (int j = i - 8; j <= i + 8; j++) if (j >= 0 && j < (int)flux.size()) { loc += flux[j]; c++; }
+        loc = c ? loc / c : 0;
+        if (flux[i] > loc * mult && flux[i] >= flux[i - 1] && flux[i] > flux[i + 1]) {
+            int pos = i * hop;
+            if (pos - last >= minGap) { onsets.push_back(pos); last = pos; }
+        }
+    }
+    if (onsets.empty() || onsets[0] != 0) onsets.insert(onsets.begin(), 0);
+    return onsets;
+}
+
 /* ---------------------------------------------------------------- engine */
 
 class Slicer {
@@ -155,6 +200,7 @@ public:
     std::vector<GuideSlice> slices;
     std::vector<Candidate>  cands;
     std::vector<int>        match;     /* slice i -> candidate index      */
+    std::vector<int>        mainOnsets;/* main transients (GUI display)   */
     SlicerParams par;
 
     /* rendered pattern (stereo), owned by GUI thread, handed to audio thread */
@@ -200,58 +246,54 @@ public:
         }
     }
 
-    /* transient slicing via spectral flux onsets */
+    /* transient slicing of the guide via the shared onset detector */
     void sliceTransient()
     {
         slices.clear();
-        int hop = 512, win = 1024;
-        std::vector<float> flux;
-        std::vector<float> prev(win / 2 + 1, 0.0f);
-        float re[1024], im[1024], w[1024];
-        for (int n = 0; n < win; n++) w[n] = 0.5f - 0.5f * cosf(SL_TWO_PI * n / win);
-        for (int s = 0; s + win <= guide.frames; s += hop) {
-            for (int n = 0; n < win; n++) { re[n] = guide.mono[s + n] * w[n]; im[n] = 0; }
-            fft_radix2(re, im, win, 0);
-            float fl = 0;
-            for (int k = 0; k <= win / 2; k++) {
-                float mag = sqrtf(re[k] * re[k] + im[k] * im[k]);
-                float d = mag - prev[k]; if (d > 0) fl += d; prev[k] = mag;
-            }
-            flux.push_back(fl);
-        }
-        /* peak-pick flux above a moving threshold */
-        std::vector<int> onsets; onsets.push_back(0);
-        for (int i = 2; i < (int)flux.size() - 2; i++) {
-            float loc = 0; int c = 0;
-            for (int j = i - 8; j <= i + 8; j++) if (j >= 0 && j < (int)flux.size()) { loc += flux[j]; c++; }
-            loc = c ? loc / c : 0;
-            if (flux[i] > loc * 1.6f && flux[i] >= flux[i-1] && flux[i] > flux[i+1]) {
-                int pos = i * hop;
-                if (pos - onsets.back() > guide.rate / 16) onsets.push_back(pos);
-            }
-        }
-        onsets.push_back(guide.frames);
-        for (size_t i = 0; i + 1 < onsets.size(); i++) {
-            GuideSlice g; g.start = onsets[i]; g.len = onsets[i + 1] - onsets[i];
+        std::vector<int> on = sl_onsets(guide.mono.data(), guide.frames, guide.rate,
+                                        par.guideThresh, guide.rate / 24);
+        on.push_back(guide.frames);
+        for (size_t i = 0; i + 1 < on.size(); i++) {
+            GuideSlice g; g.start = on[i]; g.len = on[i + 1] - on[i];
             if (g.len > 8) { g.f = sl_feat(guide.mono.data(), g.start, g.len, guide.rate);
                              slices.push_back(g); }
         }
     }
 
-    /* ---- fingerprint the main file on a hop grid ---- */
+    /* ---- fingerprint the main file: transient-aligned or a hop grid ---- */
     void buildCandidates()
     {
-        cands.clear();
+        cands.clear(); mainOnsets.clear();
         if (main.frames < SL_FFT || slices.empty()) return;
         int avg = 0; for (auto& s : slices) avg += s.len; avg /= (int)slices.size();
         if (avg < SL_FFT) avg = SL_FFT;
-        int win = avg, hop = avg / 4; if (hop < 256) hop = 256;
-        for (int s = 0; s + win <= main.frames; s += hop) {
-            Candidate c; c.start = s;
-            c.f = sl_feat(main.mono.data(), s, win, main.rate);
-            cands.push_back(c);
+
+        if (par.mainMode == SLICE_TRANSIENT) {
+            /* candidates start on the main file's own transients: chosen chunks
+             * begin on an attack, preserving the main's micro-timing */
+            mainOnsets = sl_onsets(main.mono.data(), main.frames, main.rate,
+                                   par.mainThresh, main.rate / 24);
+            for (size_t i = 0; i < mainOnsets.size(); i++) {
+                int start = mainOnsets[i];
+                int next = (i + 1 < mainOnsets.size()) ? mainOnsets[i + 1] : main.frames;
+                int wlen = next - start;
+                if (wlen < SL_FFT / 2) wlen = SL_FFT / 2;
+                if (wlen > avg * 3) wlen = avg * 3;
+                if (start + 64 >= main.frames) continue;
+                if (start + wlen > main.frames) wlen = main.frames - start;
+                Candidate c; c.start = start;
+                c.f = sl_feat(main.mono.data(), start, wlen, main.rate);
+                cands.push_back(c);
+            }
+        } else {
+            int win = avg, hop = avg / 4; if (hop < 256) hop = 256;
+            for (int s = 0; s + win <= main.frames; s += hop) {
+                Candidate c; c.start = s;
+                c.f = sl_feat(main.mono.data(), s, win, main.rate);
+                cands.push_back(c);
+            }
         }
-        if (cands.empty()) {           /* main shorter than a slice: one cand */
+        if (cands.empty()) {           /* fallback: whole main as one candidate */
             Candidate c; c.start = 0;
             c.f = sl_feat(main.mono.data(), 0, main.frames, main.rate);
             cands.push_back(c);

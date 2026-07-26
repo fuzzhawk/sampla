@@ -1,8 +1,10 @@
-# Sampla — Granular Sampler + Sample Librarian
+# Sampla — Granular Sampler + Sample Librarian + Match Slicer
 
-Two VST2 instruments for Ableton Live 9 on Windows 10, native Win32 GUIs,
-built entirely on GitHub Actions — no local toolchain required. The CI
-artifact contains x64 + x86 DLLs for both:
+Three VST2 instruments for Ableton Live 9 on Windows 10, native Win32 GUIs
+(a shared pink "kawaii" theme — dark plum backgrounds with hot-pink and
+lavender accents, laid out with generous spacing), built entirely on GitHub
+Actions — no local toolchain required. The CI artifact contains x64 + x86 DLLs
+for all three:
 
 - **Granular Sampler** (`GranularSampler_*.dll`) — 3-layer granular sampler
   with a tempo-synced glitch sequencer. Sources in `src/`, docs below.
@@ -26,15 +28,26 @@ onto the guide's timeline. Playback is **locked to the host transport** (it
 follows tempo and bar position), so it stays in the groove; a held MIDI note
 also triggers free-run playback.
 
+**Transient detection, both lanes.** Two independent slice modes with their own
+sensitivity: **GuideSlc** switches the guide between grid and transient slicing,
+and **MainSlc** does the same for how the main file is chopped into match
+candidates — in transient mode the candidate windows start on the main file's
+own onsets, so a matched chunk keeps its natural attack instead of snapping to a
+grid, freeing you from the tempo grid for micro-timing inside the loop. A
+spectral-flux onset detector drives both; the **GuideThr** / **MainThr** knobs
+set each threshold (higher = only the strongest transients). The main lane draws
+mint tick marks at every detected main-file onset when MainSlc is on.
+
 The waveforms show the guide's slice boundaries and which regions of the main
 file got used; the **map** strip colors each guide slice by its source. Knobs:
 **Mix** (guide↔mosaic), **Div**/**Bars** (grid), **Xfade** (slice crossfade),
-**Var** (anti-repeat variety), **SpecW** (timbre vs loudness weighting), plus
-**GainFollow** (match the guide slice's loudness), **PitchMatch** (repitch the
-main chunk toward the guide slice's pitch — for melodic guides), and
-**StretchFit** (resample the main chunk to fill the slot). **EXPORT WAV**
-renders the mosaic; originals are never modified. 11 automatable params; the
-chunk saves both file paths and re-matches on reload.
+**Var** (anti-repeat variety), **SpecW** (timbre vs loudness weighting),
+**GuideThr**/**MainThr** (onset thresholds), plus **GainFollow** (match the
+guide slice's loudness), **PitchMatch** (repitch the main chunk toward the guide
+slice's pitch — for melodic guides), and **StretchFit** (resample the main chunk
+to fill the slot). **EXPORT WAV** renders the mosaic; originals are never
+modified. 14 automatable params; the chunk saves both file paths and re-matches
+on reload.
 
 ## Sample Librarian
 

@@ -28,7 +28,8 @@ static std::string g_moduleDir;
 
 enum {
     pMaster = 0, pMix, pDiv, pBars, pSliceMode, pXfade, pVariation,
-    pSpectralW, pGainFollow, pPitchMatch, pStretchFit, NUM_PARAMS
+    pSpectralW, pGainFollow, pPitchMatch, pStretchFit,
+    pMainMode, pGuideThresh, pMainThresh, NUM_PARAMS
 };
 
 static float paramReal(int idx, float n)
@@ -45,6 +46,9 @@ static float paramReal(int idx, float n)
     case pGainFollow: return n >= 0.5f ? 1.0f : 0.0f;
     case pPitchMatch: return n >= 0.5f ? 1.0f : 0.0f;
     case pStretchFit: return n >= 0.5f ? 1.0f : 0.0f;
+    case pMainMode:   return n >= 0.5f ? 1.0f : 0.0f;      /* grid / transient    */
+    case pGuideThresh: return n;                           /* 0..1 sensitivity    */
+    case pMainThresh:  return n;                           /* 0..1 sensitivity    */
     }
     return n;
 }
@@ -62,6 +66,9 @@ static const PMeta kMeta[NUM_PARAMS] = {
     { "GainF",   1.00f },   /* on           */
     { "Pitch",   0.00f },   /* off          */
     { "Fit",     1.00f },   /* stretch on   */
+    { "MainSlc", 0.00f },   /* -> grid      */
+    { "GThr",    0.40f },   /* guide onset  */
+    { "MThr",    0.40f },   /* main onset   */
 };
 static const int kBarsVal[3] = { 1, 2, 4 };
 
@@ -104,6 +111,9 @@ struct Plugin {
         s.gainFollow = paramReal(pGainFollow, params[pGainFollow]) >= 0.5f;
         s.pitchMatch = paramReal(pPitchMatch, params[pPitchMatch]) >= 0.5f;
         s.stretchFit = paramReal(pStretchFit, params[pStretchFit]) >= 0.5f;
+        s.mainMode   = (int)paramReal(pMainMode, params[pMainMode]);
+        s.guideThresh = paramReal(pGuideThresh, params[pGuideThresh]);
+        s.mainThresh  = paramReal(pMainThresh, params[pMainThresh]);
         return s;
     }
 
@@ -229,8 +239,10 @@ static void paramDisplay(Plugin* p, int idx, char* out)
     case pDiv:       snprintf(out, 16, "%s", divN[(int)v & 3]); break;
     case pBars:      snprintf(out, 16, "%d", kBarsVal[(int)v % 3]); break;
     case pSliceMode: snprintf(out, 16, "%s", v >= 0.5f ? "Transnt" : "Grid"); break;
+    case pMainMode:  snprintf(out, 16, "%s", v >= 0.5f ? "Transnt" : "Grid"); break;
     case pXfade:     snprintf(out, 16, "%.1f", v); break;
-    case pSpectralW: snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); break;
+    case pSpectralW: case pGuideThresh: case pMainThresh:
+        snprintf(out, 16, "%d", (int)(v * 100 + 0.5f)); break;
     case pGainFollow: case pPitchMatch: case pStretchFit:
         snprintf(out, 16, "%s", v >= 0.5f ? "On" : "Off"); break;
     default: snprintf(out, 16, "%.2f", v);

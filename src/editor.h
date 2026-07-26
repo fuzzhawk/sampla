@@ -5,12 +5,14 @@
  * defined, so it can call straight into them. Everything here is Windows-only
  * (the DSP in engine.h stays platform-neutral for the CI smoke test).
  *
- * Layout: three stacked lanes (waveform with loop region, amber overlap bands,
+ * Layout: three stacked lanes (waveform with loop region, overlap bands,
  * draggable handles and live playhead; Mode / Play / Spec buttons; 25 knobs in
  * three rows — core sampler, experimental granular, wav operators). Below the
  * lanes sits the tempo-synced GLITCH bar: 16 step cells (click cycles the
  * algorithm, right-click clears; the playing step is highlighted) plus Div,
  * Mix and Master knobs. A global chaos SEED (.txt) box sits in the top bar.
+ *
+ * Pink "kawaii" theme (dark plum bg, hot-pink + lavender accents), roomy layout.
  */
 #ifndef EDITOR_H
 #define EDITOR_H
@@ -24,16 +26,35 @@
 /* VST wants a rect with 16-bit fields. */
 struct ERect { int16_t top, left, bottom, right; };
 
-static const int ED_W = 980;
-static const int ED_H = 726;
-static const int LANE_TOP = 34;
-static const int LANE_H   = 200;
-static const int WAVE_X   = 12;
-static const int WAVE_X2  = 556;
-static const int KNOB_R   = 13;
-static const int KCOL0    = 586;   /* first knob column center */
-static const int KCOLW    = 42;    /* column spacing            */
-static const int GBAR_Y   = LANE_TOP + 3 * LANE_H;   /* 634 */
+/* ---- kawaii palette ---- */
+#define KW_BG        RGB(43, 27, 44)
+#define KW_PANEL     RGB(32, 20, 34)
+#define KW_BORDER    RGB(120, 70, 110)
+#define KW_TEXT      RGB(255, 224, 240)
+#define KW_TEXT_DIM  RGB(200, 150, 185)
+#define KW_ACCENT    RGB(255, 150, 200)
+#define KW_KNOB      RGB(92, 54, 84)
+#define KW_KNOB_RIM  RGB(200, 110, 165)
+#define KW_KNOB_IND  RGB(255, 214, 238)
+#define KW_BTN       RGB(70, 44, 68)
+#define KW_WAVE      RGB(240, 150, 205)
+#define KW_LOOP      RGB(74, 48, 92)
+#define KW_OVERLAP   RGB(158, 90, 122)
+#define KW_HANDLE    RGB(255, 208, 130)
+#define KW_PLAY      RGB(255, 90, 140)
+#define KW_SEED_BG   RGB(60, 40, 58)
+#define KW_SEED_TX   RGB(255, 196, 224)
+
+static const int ED_W = 1024;
+static const int ED_H = 772;
+static const int LANE_TOP = 40;
+static const int LANE_H   = 210;
+static const int WAVE_X   = 16;
+static const int WAVE_X2  = 560;
+static const int KNOB_R   = 14;
+static const int KCOL0    = 596;   /* first knob column center */
+static const int KCOLW    = 48;    /* column spacing            */
+static const int GBAR_Y   = LANE_TOP + 3 * LANE_H;   /* 670 */
 
 /* the 25 knobs shown per lane, rows of 9 */
 static const int NKNOBS = 25;
@@ -71,43 +92,43 @@ static inline int laneTopY(int l)              { return LANE_TOP + l * LANE_H; }
 static inline void waveRect(int l, RECT* r)
 {
     r->left = WAVE_X; r->right = WAVE_X2;
-    r->top = laneTopY(l) + 22; r->bottom = laneTopY(l) + 150;
+    r->top = laneTopY(l) + 26; r->bottom = laneTopY(l) + 158;
 }
 static inline void knobCenter(int l, int k, int* cx, int* cy)
 {
     int col = k % 9, row = k / 9;
     *cx = KCOL0 + col * KCOLW;
-    *cy = laneTopY(l) + 44 + row * 62;
+    *cy = laneTopY(l) + 48 + row * 64;
 }
 static inline void modeBtnRect(int l, RECT* r)
 {
-    r->left = 240; r->right = 312;
-    r->top = laneTopY(l) + 3; r->bottom = laneTopY(l) + 20;
+    r->left = 248; r->right = 328;
+    r->top = laneTopY(l) + 4; r->bottom = laneTopY(l) + 22;
 }
 static inline void playBtnRect(int l, RECT* r)
 {
-    r->left = 318; r->right = 400;
-    r->top = laneTopY(l) + 3; r->bottom = laneTopY(l) + 20;
+    r->left = 336; r->right = 424;
+    r->top = laneTopY(l) + 4; r->bottom = laneTopY(l) + 22;
 }
 static inline void specBtnRect(int l, RECT* r)
 {
-    r->left = 406; r->right = 490;
-    r->top = laneTopY(l) + 3; r->bottom = laneTopY(l) + 20;
+    r->left = 432; r->right = 524;
+    r->top = laneTopY(l) + 4; r->bottom = laneTopY(l) + 22;
 }
 static inline void seedBtnRect(RECT* r)
 {
-    r->left = 640; r->right = 968; r->top = 6; r->bottom = 25;
+    r->left = 672; r->right = 1012; r->top = 8; r->bottom = 28;
 }
 static inline void glitchCellRect(int i, RECT* r)
 {
-    r->left = 12 + i * 44; r->right = r->left + 40;
-    r->top = GBAR_Y + 30; r->bottom = GBAR_Y + 72;
+    r->left = 16 + i * 48; r->right = r->left + 44;
+    r->top = GBAR_Y + 32; r->bottom = GBAR_Y + 76;
 }
 static inline void glitchKnob(int k, int* cx, int* cy, int* param)
 {
-    static const int px[NGKNOBS] = { 780, 840, 920 };
+    static const int px[NGKNOBS] = { 828, 900, 976 };
     static const int pp[NGKNOBS] = { gDiv, gMix, 0 };   /* 0 = Master */
-    *cx = px[k]; *cy = GBAR_Y + 50; *param = pp[k];
+    *cx = px[k]; *cy = GBAR_Y + 54; *param = pp[k];
 }
 static inline bool inRect(const RECT& r, int x, int y)
 {
@@ -119,34 +140,38 @@ static inline bool inRect(const RECT& r, int x, int y)
 static void drawKnob(HDC dc, int cx, int cy, float val, const char* label,
                      const char* value)
 {
-    HBRUSH kb = CreateSolidBrush(RGB(64, 68, 84));
-    HPEN   rim = CreatePen(PS_SOLID, 1, RGB(96, 102, 122));
+    HBRUSH kb = CreateSolidBrush(KW_KNOB);
+    HPEN   rim = CreatePen(PS_SOLID, 2, KW_KNOB_RIM);
     HGDIOBJ ob = SelectObject(dc, kb), op = SelectObject(dc, rim);
     Ellipse(dc, cx - KNOB_R, cy - KNOB_R, cx + KNOB_R, cy + KNOB_R);
 
     double a = (0.75 + (double)val * 1.5) * 3.14159265358979;
     int ex = cx + (int)(cos(a) * (KNOB_R - 3));
     int ey = cy + (int)(sin(a) * (KNOB_R - 3));
-    HPEN ind = CreatePen(PS_SOLID, 2, RGB(232, 236, 246));
+    HPEN ind = CreatePen(PS_SOLID, 2, KW_KNOB_IND);
     SelectObject(dc, ind);
     MoveToEx(dc, cx, cy, nullptr); LineTo(dc, ex, ey);
 
     SelectObject(dc, op); SelectObject(dc, ob);
     DeleteObject(kb); DeleteObject(rim); DeleteObject(ind);
 
-    SetTextColor(dc, RGB(150, 156, 170));
-    RECT tl = { cx - 22, cy - KNOB_R - 14, cx + 22, cy - KNOB_R - 1 };
+    SetTextColor(dc, KW_TEXT_DIM);
+    RECT tl = { cx - 24, cy - KNOB_R - 15, cx + 24, cy - KNOB_R - 1 };
     DrawTextA(dc, label, -1, &tl, DT_CENTER | DT_SINGLELINE);
-    SetTextColor(dc, RGB(205, 210, 222));
-    RECT vl = { cx - 22, cy + KNOB_R + 1, cx + 22, cy + KNOB_R + 14 };
+    SetTextColor(dc, KW_TEXT);
+    RECT vl = { cx - 24, cy + KNOB_R + 1, cx + 24, cy + KNOB_R + 15 };
     DrawTextA(dc, value, -1, &vl, DT_CENTER | DT_SINGLELINE);
 }
 
 static void drawTextBtn(HDC dc, const RECT& r, const char* text)
 {
-    HBRUSH bb = CreateSolidBrush(RGB(48, 52, 66));
+    HBRUSH bb = CreateSolidBrush(KW_BTN);
     FillRect(dc, &r, bb); DeleteObject(bb);
-    SetTextColor(dc, RGB(215, 220, 232));
+    HPEN pen = CreatePen(PS_SOLID, 1, KW_BORDER);
+    HGDIOBJ o = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, r.left, r.top, r.right, r.bottom);
+    SelectObject(dc, o); SelectObject(dc, ob); DeleteObject(pen);
+    SetTextColor(dc, KW_TEXT);
     DrawTextA(dc, text, -1, (RECT*)&r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
@@ -156,12 +181,12 @@ static void drawLane(HDC dc, Plugin* p, int l)
     int base0 = 1 + l * PPL;
 
     /* header: layer tag + filename */
-    SetTextColor(dc, RGB(120, 200, 250));
+    SetTextColor(dc, KW_ACCENT);
     char tag[8]; snprintf(tag, sizeof(tag), "L%d", l + 1);
-    TextOutA(dc, WAVE_X, top + 3, tag, (int)strlen(tag));
+    TextOutA(dc, WAVE_X, top + 4, tag, (int)strlen(tag));
 
     Sample* s = p->engine.layers[l].live.load();
-    SetTextColor(dc, RGB(190, 196, 208));
+    SetTextColor(dc, KW_TEXT_DIM);
     const char* fname = "- drop a .wav (or double-click) -";
     std::string base;
     if (s && !s->path.empty()) {
@@ -172,7 +197,7 @@ static void drawLane(HDC dc, Plugin* p, int l)
                  base.c_str(), s->frames / (float)s->srcRate, s->srcRate);
         base = info; fname = base.c_str();
     }
-    TextOutA(dc, WAVE_X + 30, top + 3, fname, (int)strlen(fname));
+    TextOutA(dc, WAVE_X + 32, top + 4, fname, (int)strlen(fname));
 
     /* mode / play / spec buttons */
     int mode = (int)layerReal(oMode, p->params[base0 + oMode]);
@@ -187,7 +212,7 @@ static void drawLane(HDC dc, Plugin* p, int l)
 
     /* waveform background */
     RECT wr; waveRect(l, &wr);
-    HBRUSH wb = CreateSolidBrush(RGB(16, 18, 24));
+    HBRUSH wb = CreateSolidBrush(KW_PANEL);
     FillRect(dc, &wr, wb); DeleteObject(wb);
     int waveW = wr.right - wr.left;
     int mid = (wr.top + wr.bottom) / 2;
@@ -199,10 +224,10 @@ static void drawLane(HDC dc, Plugin* p, int l)
     int lx = wr.left + (int)(ls * waveW);
     int ex = wr.left + (int)(le * waveW);
     RECT loopR = { lx, wr.top, ex, wr.bottom };
-    HBRUSH lb = CreateSolidBrush(RGB(30, 44, 70));
+    HBRUSH lb = CreateSolidBrush(KW_LOOP);
     FillRect(dc, &loopR, lb); DeleteObject(lb);
 
-    /* crossfade / overlap bands (amber), drawn under the waveform */
+    /* crossfade / overlap bands, drawn under the waveform */
     if (s && s->frames > 1 && mode == LOOP_FORWARD) {
         float ovMs = layerReal(oOverlap, p->params[base0 + oOverlap]);
         double xf = ovMs * 0.001 * s->srcRate / s->frames;   /* as fraction   */
@@ -210,7 +235,7 @@ static void drawLane(HDC dc, Plugin* p, int l)
         if (xf > loopLen * 0.5) xf = loopLen * 0.5;
         if (xf > 0) {
             int w = (int)(xf * waveW);
-            HBRUSH ab = CreateSolidBrush(RGB(120, 92, 40));
+            HBRUSH ab = CreateSolidBrush(KW_OVERLAP);
             RECT b1 = { ex - w, wr.top, ex, wr.bottom };       /* fade out  */
             RECT b2 = { lx, wr.top, lx + w, wr.bottom };       /* fade in   */
             FillRect(dc, &b1, ab); FillRect(dc, &b2, ab);
@@ -220,7 +245,7 @@ static void drawLane(HDC dc, Plugin* p, int l)
 
     /* waveform peaks */
     if (s && s->frames > 1) {
-        HPEN wp = CreatePen(PS_SOLID, 1, RGB(96, 168, 232));
+        HPEN wp = CreatePen(PS_SOLID, 1, KW_WAVE);
         HGDIOBJ o = SelectObject(dc, wp);
         for (int x = 0; x < waveW; x++) {
             int pk = x * Sample::PEAKS / waveW;
@@ -233,8 +258,14 @@ static void drawLane(HDC dc, Plugin* p, int l)
         SelectObject(dc, o); DeleteObject(wp);
     }
 
+    /* wave border */
+    { HPEN bp = CreatePen(PS_SOLID, 1, KW_BORDER);
+      HGDIOBJ o = SelectObject(dc, bp), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+      Rectangle(dc, wr.left, wr.top, wr.right, wr.bottom);
+      SelectObject(dc, o); SelectObject(dc, ob); DeleteObject(bp); }
+
     /* loop handles */
-    HPEN hp = CreatePen(PS_SOLID, 2, RGB(240, 200, 90));
+    HPEN hp = CreatePen(PS_SOLID, 2, KW_HANDLE);
     HGDIOBJ oh = SelectObject(dc, hp);
     MoveToEx(dc, lx, wr.top, nullptr); LineTo(dc, lx, wr.bottom);
     MoveToEx(dc, ex, wr.top, nullptr); LineTo(dc, ex, wr.bottom);
@@ -244,7 +275,7 @@ static void drawLane(HDC dc, Plugin* p, int l)
     float ph = p->engine.layers[l].playhead.load();
     if (ph > 0.0001f) {
         int px = wr.left + (int)(ph * waveW);
-        HPEN pp = CreatePen(PS_SOLID, 1, RGB(250, 90, 90));
+        HPEN pp = CreatePen(PS_SOLID, 2, KW_PLAY);
         HGDIOBJ opp = SelectObject(dc, pp);
         MoveToEx(dc, px, wr.top, nullptr); LineTo(dc, px, wr.bottom);
         SelectObject(dc, opp); DeleteObject(pp);
@@ -261,18 +292,18 @@ static void drawLane(HDC dc, Plugin* p, int l)
 
 static void drawGlitchBar(HDC dc, Plugin* p)
 {
-    SetTextColor(dc, RGB(230, 190, 120));
-    TextOutA(dc, 12, GBAR_Y + 8, "GLITCH SEQ", 10);
-    SetTextColor(dc, RGB(140, 146, 160));
+    SetTextColor(dc, KW_ACCENT);
+    TextOutA(dc, 16, GBAR_Y + 10, "GLITCH SEQ", 10);
+    SetTextColor(dc, KW_TEXT_DIM);
     const char* legend =
         "click: cycle algo | right-click: clear | - Stut St16 Rev Tape Half Gate Scrm";
-    TextOutA(dc, 110, GBAR_Y + 10, legend, (int)strlen(legend));
+    TextOutA(dc, 116, GBAR_Y + 12, legend, (int)strlen(legend));
 
     int cur = p->engine.glitchStep.load();
     static const COLORREF algoCol[GL_ALGO_COUNT] = {
-        RGB(38, 40, 50),  RGB(70, 110, 170), RGB(70, 140, 190),
-        RGB(150, 90, 170), RGB(170, 110, 60), RGB(90, 150, 90),
-        RGB(170, 150, 60), RGB(180, 70, 90)
+        RGB(48, 32, 48),  RGB(150, 90, 150), RGB(180, 110, 175),
+        RGB(200, 120, 170), RGB(190, 130, 110), RGB(150, 110, 170),
+        RGB(210, 150, 120), RGB(220, 100, 140)
     };
 
     for (int i = 0; i < 16; i++) {
@@ -281,19 +312,19 @@ static void drawGlitchBar(HDC dc, Plugin* p)
         HBRUSH b = CreateSolidBrush(algoCol[algo % GL_ALGO_COUNT]);
         FillRect(dc, &r, b); DeleteObject(b);
         if (i == cur) {                          /* playing-step highlight */
-            HPEN hp = CreatePen(PS_SOLID, 2, RGB(250, 240, 200));
+            HPEN hp = CreatePen(PS_SOLID, 2, RGB(255, 236, 246));
             HGDIOBJ o = SelectObject(dc, hp);
             HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
             Rectangle(dc, r.left, r.top, r.right, r.bottom);
             SelectObject(dc, o); SelectObject(dc, ob); DeleteObject(hp);
         }
-        SetTextColor(dc, RGB(225, 230, 240));
+        SetTextColor(dc, KW_TEXT);
         DrawTextA(dc, kGlitchNames[algo % GL_ALGO_COUNT], -1, &r,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if ((i & 3) == 0) {                      /* beat marker */
-            SetTextColor(dc, RGB(120, 126, 140));
+            SetTextColor(dc, KW_TEXT_DIM);
             char num[4]; snprintf(num, sizeof(num), "%d", i / 4 + 1);
-            TextOutA(dc, r.left + 2, r.top - 14, num, (int)strlen(num));
+            TextOutA(dc, r.left + 2, r.top - 15, num, (int)strlen(num));
         }
     }
 
@@ -317,26 +348,30 @@ static void paintEditor(HWND hwnd, Plugin* p)
     SetBkMode(dc, TRANSPARENT);
 
     RECT full = { 0, 0, ED_W, ED_H };
-    HBRUSH bg = CreateSolidBrush(RGB(24, 26, 32));
+    HBRUSH bg = CreateSolidBrush(KW_BG);
     FillRect(dc, &full, bg); DeleteObject(bg);
 
-    SetTextColor(dc, RGB(230, 234, 244));
-    TextOutA(dc, WAVE_X, 7, "GRANULAR SAMPLER", 16);
-    SetTextColor(dc, RGB(140, 146, 160));
+    SetTextColor(dc, KW_ACCENT);
+    TextOutA(dc, WAVE_X, 9, "* GRANULAR SAMPLER *", 20);
+    SetTextColor(dc, KW_TEXT_DIM);
     const char* hint = "drag knobs vertically | drag loop edges | dbl-click wave = load";
-    TextOutA(dc, 170, 9, hint, (int)strlen(hint));
+    TextOutA(dc, 210, 11, hint, (int)strlen(hint));
 
     /* chaos seed box */
     RECT sr; seedBtnRect(&sr);
-    HBRUSH sb = CreateSolidBrush(RGB(52, 40, 30));
+    HBRUSH sb = CreateSolidBrush(KW_SEED_BG);
     FillRect(dc, &sr, sb); DeleteObject(sb);
+    { HPEN pen = CreatePen(PS_SOLID, 1, KW_BORDER);
+      HGDIOBJ o = SelectObject(dc, pen), obb = SelectObject(dc, GetStockObject(NULL_BRUSH));
+      Rectangle(dc, sr.left, sr.top, sr.right, sr.bottom);
+      SelectObject(dc, o); SelectObject(dc, obb); DeleteObject(pen); }
     std::string sn = p->seedName();
     char seedLine[200];
     if (sn.empty())
         snprintf(seedLine, sizeof(seedLine), "CHAOS SEED: (drop a .txt or double-click)");
     else
         snprintf(seedLine, sizeof(seedLine), "CHAOS SEED: %s", sn.c_str());
-    SetTextColor(dc, RGB(224, 180, 120));
+    SetTextColor(dc, KW_SEED_TX);
     DrawTextA(dc, seedLine, -1, &sr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     for (int l = 0; l < NUM_LAYERS; l++) drawLane(dc, p, l);
@@ -611,7 +646,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 #else  /* !_WIN32 — headless build: editor is a no-op so DSP still compiles */
 
 struct ERect { int16_t top, left, bottom, right; };
-static ERect g_rect = { 0, 0, 726, 980 };
+static ERect g_rect = { 0, 0, 772, 1024 };
 static ERect* editorRect() { return &g_rect; }
 static bool editorOpen(Plugin*, void*) { return false; }
 static void editorClose(Plugin*) {}

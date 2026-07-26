@@ -109,6 +109,30 @@ int main()
     sl.sliceGuide();
     CHECK(sl.slices.size() >= 2, "transient slicing yields onsets");
 
+    /* main-transient candidates: onsets should track the 220->3000 Hz change
+       at ~1 s, and candidates should begin at those onsets */
+    sl.par.mainMode = SLICE_TRANSIENT; sl.par.mainThresh = 0.4f;
+    sl.buildCandidates();
+    CHECK(!sl.mainOnsets.empty(), "main transient onsets detected");
+    { bool nearBoundary = false;
+      for (int on : sl.mainOnsets) if (abs(on - rate) < rate / 8) nearBoundary = true;
+      CHECK(nearBoundary, "an onset lands near the 220->3000 Hz change"); }
+    { bool aligned = true;
+      for (auto& c : sl.cands) {
+          bool hit = false;
+          for (int on : sl.mainOnsets) if (c.start == on) hit = true;
+          if (!hit) aligned = false;
+      }
+      CHECK(aligned && !sl.cands.empty(), "candidates start on detected onsets"); }
+
+    /* threshold sensitivity: a higher threshold yields no more onsets */
+    sl.par.mainThresh = 0.05f; sl.buildCandidates();
+    int nLow = (int)sl.mainOnsets.size();
+    sl.par.mainThresh = 0.9f;  sl.buildCandidates();
+    int nHigh = (int)sl.mainOnsets.size();
+    CHECK(nHigh <= nLow, "raising the threshold reduces (or keeps) onset count");
+    sl.par.mainMode = SLICE_GRID;   /* restore */
+
     /* WAV round-trip through the loader */
     { std::vector<float> lr((size_t)rate * 2);
       tone(lr, 0, rate, 440.0f, rate);
