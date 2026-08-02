@@ -1,10 +1,10 @@
-# Sampla — Granular Sampler + Sample Librarian + Match Slicer
+# Sampla — Granular Sampler + Sample Librarian + Match Slicer + Spectral Canvas
 
-Three VST2 instruments for Ableton Live 9 on Windows 10, native Win32 GUIs
+Four VST2 plugins for Ableton Live 9 on Windows 10, native Win32 GUIs
 (a shared pink "kawaii" theme — dark plum backgrounds with hot-pink and
 lavender accents, laid out with generous spacing), built entirely on GitHub
 Actions — no local toolchain required. The CI artifact contains x64 + x86 DLLs
-for all three:
+for all four (three instruments + one insert effect):
 
 - **Granular Sampler** (`GranularSampler_*.dll`) — 3-layer granular sampler
   with a tempo-synced glitch sequencer. Sources in `src/`, docs below.
@@ -15,6 +15,10 @@ for all three:
   guide (an amen break, a synth melody) and a main file; it slices the guide,
   finds the best-matching section of the main file for each slice, and plays
   them back in the guide's groove, locked to the DAW. Sources in `slicematch/`.
+- **Spectral Canvas** (`SpectralCanvas_*.dll`) — an INSERT EFFECT (not an
+  instrument): captures an N-bar loop of the incoming audio, turns it into an
+  editable spectrogram you paint on (move / pitch / smear / cellular-automata /
+  gain / erase), and re-renders it every loop. Sources in `spectral/`.
 
 ## Match Slicer
 
@@ -48,6 +52,44 @@ slice's pitch — for melodic guides), and **StretchFit** (resample the main chu
 to fill the slot). **EXPORT WAV** renders the mosaic; originals are never
 modified. 14 automatable params; the chunk saves both file paths and re-matches
 on reload.
+
+## Spectral Canvas
+
+An **insert effect** in the vein of Gross Beat / Stutter Edit, but the control
+surface is a **spectrogram you paint on**. Drop it on an audio track; it
+continuously captures an **N-bar loop** (1 / 2 / 4 / 8, locked to the host
+tempo + time signature) and turns it into an editable time × frequency canvas.
+What you hear is the *painted* version, re-rendered every loop. Because the
+render happens once per loop on a background thread, it uses **Griffin-Lim**
+phase reconstruction — quality a real-time effect can't afford.
+
+Like Gross Beat, it reaches back in time: the wet output is the previous loop's
+audio re-arranged through your edits, so there's an inherent one-loop latency
+(the first loop after you hit play passes dry). Two capture modes: **streaming**
+(the edits ride on whatever's playing, refreshed each loop) and **Freeze** (grab
+one loop and keep painting against that fixed image — it re-renders the instant
+you change an edit).
+
+Paint tools (drag a region on the canvas; for most tools the op applies on
+release, for **Move** you drag the selection to its new home):
+
+- **Move** — copy or cut a rectangle of the spectrogram and paste it at a new
+  time/frequency. Time-moves wrap around the loop; this is the "rearrange
+  sections in time" gesture.
+- **Pitch** — resample a region's frequency axis by a semitone amount (a pitch
+  bend on just that patch of spectrum).
+- **Smear** — a freeze-tail (sustain energy forward in time) or a spectral blur.
+- **CA** — a cellular-automaton gate: a coarse freq-band × time-step grid seeded
+  from the audio, evolving with a Wolfram rule, gating the magnitudes into
+  animated, tempo-locked glitch patterns.
+- **Gain / Erase** — boost, duck, or silence a region.
+
+Edits are a **non-destructive op stack** (Undo / Clear, drawn as tinted overlays
+on the canvas) that re-applies every loop and serializes into the plugin chunk,
+so a painted canvas is saved with the project. Knobs: **Mix** (dry↔wet),
+**Master**, **Amt** / **Pitch** / **Rule** (tool parameters), **Qual**
+(Griffin-Lim iterations: Lo/Md/Hi). The engine (`spectral/src/canvas.h`) is
+headless and CI-tested; the Win32 canvas GUI is in `spectral/src/editor.h`.
 
 ## Sample Librarian
 
@@ -255,10 +297,17 @@ automatable VST parameter (70 in total). Sample **file paths** and the chaos
     src/engine.h                  sampler + granular DSP (platform-neutral)
     src/editor.h                  native Win32/GDI editor
     src/plugin.cpp                VST glue: params, MIDI, chunk state, dispatch
+    src/fft.h                     clean-room radix-2 FFT (shared by all plugins)
+    librarian/src/                Sample Librarian: librarian.h + plugin.cpp + editor.h
+    slicematch/src/               Match Slicer: slicer.h + plugin.cpp + editor.h
+    spectral/src/canvas.h         Spectral Canvas engine (STFT, op stack, Griffin-Lim)
+    spectral/src/plugin.cpp       Spectral Canvas VST effect (capture + render worker)
+    spectral/src/editor.h         Spectral Canvas GUI (spectrogram + paint tools)
     test/host.c                   console host for the CI smoke test
     test/engine_test.cpp          native DSP unit test (real audio path)
-    Makefile                      builds x64 + x86 DLLs, hosts, engine test
-    .github/workflows/build.yml   compile, engine test, Wine smoke test, artifacts
+    spectral/test/canvas_test.cpp native canvas engine unit test
+    Makefile                      builds x64 + x86 DLLs, hosts, engine tests
+    .github/workflows/build.yml   compile, unit tests, Wine smoke test, artifacts
 
 ## Browser-only workflow
 

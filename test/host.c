@@ -73,13 +73,16 @@ int main(int argc, char** argv)
         printf("  p%d %-10s = %s %s\n", i, pn, pd, pl);
     }
 
-    /* one silent block through processReplacing */
-    static float L[512], R[512];
+    /* one silent block through processReplacing. Effects read inputs, so hand
+     * over real (silent) input buffers, not NULL. */
+    static float IL[512], IR[512], L[512], R[512];
+    float* ins[2]  = { IL, IR };
     float* outs[2] = { L, R };
-    if (fx->processReplacing) fx->processReplacing(fx, 0, outs, 512);
+    if (fx->processReplacing) fx->processReplacing(fx, ins, outs, 512);
 
-    if (fx->numOutputs != 2 || !(fx->flags & (1 << 8))) {
-        printf("FAIL: expected stereo synth\n"); return 1;
+    /* accept both synth instruments and stereo effects */
+    if (fx->numOutputs != 2) {
+        printf("FAIL: expected stereo output\n"); return 1;
     }
 
     printf("PASS\n");

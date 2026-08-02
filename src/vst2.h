@@ -121,7 +121,9 @@ struct VstTimeInfo {
 enum {
     kVstTransportPlaying = 1 << 1,
     kVstPpqPosValid      = 1 << 9,
-    kVstTempoValid       = 1 << 10
+    kVstTempoValid       = 1 << 10,
+    kVstBarsValid        = 1 << 11,
+    kVstTimeSigValid     = 1 << 13
 };
 
 /* MIDI events */
