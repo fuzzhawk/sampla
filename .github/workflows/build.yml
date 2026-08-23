@@ -48,6 +48,9 @@ jobs:
       - name: Spectral Canvas unit test (native)
         run: make spectraltest
 
+      - name: Spectral Split unit test (native)
+        run: make splittest
+
       - name: Smoke test under Wine (x64)
         run: |
           export WINEDEBUG=-all
@@ -55,6 +58,7 @@ jobs:
           wine build/host64.exe build/SampleLibrarian_x64.dll
           wine build/host64.exe build/MatchSlicer_x64.dll
           wine build/host64.exe build/SpectralCanvas_x64.dll
+          wine build/host64.exe build/SpectralSplit_x64.dll
 
       - name: Upload DLLs
         uses: actions/upload-artifact@v4

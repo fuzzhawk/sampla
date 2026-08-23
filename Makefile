@@ -8,11 +8,13 @@ LIBHDRS = src/vst2.h src/wav.h src/fft.h librarian/src/librarian.h \
           third_party/onnxruntime_c_api.h third_party/json.hpp
 MSHDRS = src/vst2.h src/wav.h src/fft.h slicematch/src/slicer.h slicematch/src/editor.h
 SCHDRS = src/vst2.h src/fft.h spectral/src/canvas.h spectral/src/editor.h
+SSHDRS = src/vst2.h src/fft.h split/src/split.h split/src/editor.h
 
 all: build/GranularSampler_x64.dll build/GranularSampler_x86.dll \
      build/SampleLibrarian_x64.dll build/SampleLibrarian_x86.dll \
      build/MatchSlicer_x64.dll build/MatchSlicer_x86.dll \
-     build/SpectralCanvas_x64.dll build/SpectralCanvas_x86.dll
+     build/SpectralCanvas_x64.dll build/SpectralCanvas_x86.dll \
+     build/SpectralSplit_x64.dll build/SpectralSplit_x86.dll
 
 # ---- Granular Sampler ----
 
@@ -53,6 +55,16 @@ build/SpectralCanvas_x64.dll: spectral/src/plugin.cpp $(SCHDRS)
 build/SpectralCanvas_x86.dll: spectral/src/plugin.cpp $(SCHDRS)
 	mkdir -p build
 	i686-w64-mingw32-g++ $(CXXFLAGS) -Isrc -Ispectral/src -o $@ spectral/src/plugin.cpp $(LDLIBS)
+
+# ---- Spectral Split ----
+
+build/SpectralSplit_x64.dll: split/src/plugin.cpp $(SSHDRS)
+	mkdir -p build
+	x86_64-w64-mingw32-g++ $(CXXFLAGS) -Isrc -Isplit/src -o $@ split/src/plugin.cpp $(LDLIBS)
+
+build/SpectralSplit_x86.dll: split/src/plugin.cpp $(SSHDRS)
+	mkdir -p build
+	i686-w64-mingw32-g++ $(CXXFLAGS) -Isrc -Isplit/src -o $@ split/src/plugin.cpp $(LDLIBS)
 
 # ---- CI smoke-test hosts ----
 
@@ -95,6 +107,13 @@ spectraltest: build/canvas_test
 build/canvas_test: spectral/test/canvas_test.cpp spectral/src/canvas.h src/fft.h
 	mkdir -p build
 	$(CXX) -O2 -std=c++14 -Wall -Wextra -Isrc -Ispectral/src -o $@ spectral/test/canvas_test.cpp
+
+splittest: build/split_test
+	./build/split_test
+
+build/split_test: split/test/split_test.cpp split/src/split.h src/fft.h
+	mkdir -p build
+	$(CXX) -O2 -std=c++14 -Wall -Wextra -Isrc -Isplit/src -o $@ split/test/split_test.cpp
 
 clean:
 	rm -rf build

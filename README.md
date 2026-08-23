@@ -1,10 +1,10 @@
-# Sampla — Granular Sampler + Sample Librarian + Match Slicer + Spectral Canvas
+# Sampla — Granular Sampler + Sample Librarian + Match Slicer + Spectral Canvas + Spectral Split
 
-Four VST2 plugins for Ableton Live 9 on Windows 10, native Win32 GUIs
-(a shared pink "kawaii" theme — dark plum backgrounds with hot-pink and
-lavender accents, laid out with generous spacing), built entirely on GitHub
-Actions — no local toolchain required. The CI artifact contains x64 + x86 DLLs
-for all four (three instruments + one insert effect):
+Five VST2 plugins for Ableton Live 9 on Windows 10, native Win32 GUIs, built
+entirely on GitHub Actions — no local toolchain required. The three instruments
+plus the Spectral Canvas effect share a pink "kawaii" theme; Spectral Split has
+its own minimal dark theme. The CI artifact contains x64 + x86 DLLs for all
+five (three instruments + two insert effects):
 
 - **Granular Sampler** (`GranularSampler_*.dll`) — 3-layer granular sampler
   with a tempo-synced glitch sequencer. Sources in `src/`, docs below.
@@ -19,6 +19,10 @@ for all four (three instruments + one insert effect):
   instrument): captures an N-bar loop of the incoming audio, turns it into an
   editable spectrogram you paint on (move / pitch / smear / cellular-automata /
   gain / erase), and re-renders it every loop. Sources in `spectral/`.
+- **Spectral Split** (`SpectralSplit_*.dll`) — a single-purpose INSERT EFFECT:
+  one big knob crossfades between the tonal (sustained/harmonic) and atonal
+  (broadband/transient) content of the incoming audio, via a high-resolution
+  4096-point STFT. Sources in `split/`.
 
 ## Match Slicer
 
@@ -90,6 +94,33 @@ so a painted canvas is saved with the project. Knobs: **Mix** (dry↔wet),
 **Master**, **Amt** / **Pitch** / **Rule** (tool parameters), **Qual**
 (Griffin-Lim iterations: Lo/Md/Hi). The engine (`spectral/src/canvas.h`) is
 headless and CI-tested; the Win32 canvas GUI is in `spectral/src/editor.h`.
+
+## Spectral Split
+
+A dead-simple, single-purpose **insert effect**: one big knob that crossfades
+between the **tonal** and **atonal** halves of whatever you feed it. Drop it on
+a track and dial toward TONAL to keep the sustained, harmonic, pitched content
+(and drop the noise/transients), or toward ATONAL to keep the breath, air,
+transients and texture (and drop the pitched tone). Dead centre is a
+full-range, bit-exact bypass.
+
+Under the hood it runs a **high-resolution 4096-point STFT at 4× overlap**
+(Hann analysis + synthesis, constant-overlap-add) for the best frequency
+resolution / fidelity, and separates each frame with median-based harmonic-
+percussive separation (Fitzgerald 2010): the **tonal** estimate is a short
+causal median across time per bin (sustained energy survives, one-frame
+transients don't — and it adds no extra latency), the **atonal** estimate is a
+median across frequency within the frame (broadband energy survives, narrow
+tonal peaks are suppressed). Complementary Wiener masks (Mh + Mp = 1) guarantee
+the two halves sum back to the original, so centre is a true bypass. The window
+latency is reported to the host for delay compensation, and the dry path is
+delay-matched so **Mix** stays phase-coherent.
+
+Controls: the large **Split** knob (its arc shifts warm-amber on the atonal
+side to cool-cyan on the tonal side; double-click to recentre), plus small
+**Mix** (dry/wet) and **Output** knobs. Three automatable params, lightweight
+and real-time. The engine (`split/src/split.h`) is headless and CI-tested; the
+dark Win32 GUI is in `split/src/editor.h`.
 
 ## Sample Librarian
 
@@ -303,9 +334,13 @@ automatable VST parameter (70 in total). Sample **file paths** and the chaos
     spectral/src/canvas.h         Spectral Canvas engine (STFT, op stack, Griffin-Lim)
     spectral/src/plugin.cpp       Spectral Canvas VST effect (capture + render worker)
     spectral/src/editor.h         Spectral Canvas GUI (spectrogram + paint tools)
+    split/src/split.h             Spectral Split engine (streaming HPSS, tonal/atonal)
+    split/src/plugin.cpp          Spectral Split VST effect (real-time insert)
+    split/src/editor.h            Spectral Split GUI (dark theme, big Split knob)
     test/host.c                   console host for the CI smoke test
     test/engine_test.cpp          native DSP unit test (real audio path)
     spectral/test/canvas_test.cpp native canvas engine unit test
+    split/test/split_test.cpp     native split engine unit test
     Makefile                      builds x64 + x86 DLLs, hosts, engine tests
     .github/workflows/build.yml   compile, unit tests, Wine smoke test, artifacts
 
